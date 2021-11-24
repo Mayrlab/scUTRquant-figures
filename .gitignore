@@ -1,0 +1,9 @@
+.DS_Store
+.Rhistory
+*.Rproj
+.Rproj.user/
+data/
+output/
+scratch/
+transfer.xbio.sh
+*.*~

@@ -1,0 +1,298 @@
+---
+title: "Compare CellRanger vs scUTRquant Counts"
+author: "Mervin Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+
+# Purpose 
+
+Here we compare the count results of CellRanger versus scUTRquant using the 10X
+Chromium 3'-end demonstration data (v2 and v3). Specifically, we check for any
+systematic differences in genes.
+
+# Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(SingleCellExperiment)
+library(DropletUtils)
+library(GenomicRanges)
+library(plyranges)
+library(rtracklayer)
+library(tidyverse)
+library(ggbeeswarm)
+library(magrittr)
+library(cowplot)
+library(Matrix)
+```
+
+
+# Data
+```{r load_data, message=FALSE, warning=FALSE}
+SAMPLE_SHEET="metadata/counts_sample_sheet.csv"
+GTF="data/gtf/adult.utrome.e3.t200.f0.999.w500.gtf.gz"
+
+df_txs <- import(GTF) %>%
+  filter(type == 'exon') %>%
+  mcols() %>% as_tibble() %>%
+  group_by(gene_id) %>%
+  summarize(n_exons=length(unique(exon_id)), 
+            n_txs=length(unique(transcript_id))) %>%
+  mutate(n_exons=cut(n_exons, breaks=c(0,1,2,4,9,Inf),
+                     labels=c("1", "2", "3-4", "5-9", "10+")),
+         n_txs=cut(n_txs, breaks=c(0,1,2,3,4,Inf),
+                     labels=c("1", "2", "3", "4", "5+")))
+
+gr_genes <- import(GTF, genome="mm10") %>%
+  filter(type == 'gene') %>%
+  mutate(gene_id=str_extract(gene_id, "^ENSMUSG[0-9]+")) %>%
+  `names<-`(.$gene_id)
+mcols(gr_genes) <- NULL
+
+df_genes <- readRDS("data/utrs/utrome_genes_annotation.Rds") %>%
+  merge(df_txs, by='gene_id', all.x=TRUE, all.y=FALSE) %>%
+  `rownames<-`(str_extract(.$gene_id, "^ENSMUSG[0-9]+"))
+
+## conform 10X cell ids to match scUTRquant cell_id
+conform_cell_ids <- function (sample_id, sce) {
+  colData(sce) %<>%
+    as_tibble %>%
+    mutate(bx=str_extract(Barcode, "^[ACGT]{16}"),
+           cell_id=str_c(sample_id, bx, sep='_')) %>%
+    select(cell_id, bx) %>%
+    set_rownames(.$cell_id) %>%
+    DataFrame()
+  sce
+}
+
+## summarize scUTRquant transcript counts to gene counts
+txs_to_genes <- function (sce) {
+  M_genes_txs <- rowData(sce)$gene_id %>%
+    fac2sparse %>%
+    set_rownames(str_extract(rownames(.), "^ENSMUSG[0-9]+"))
+  sce_g <- SingleCellExperiment(assays=list(counts=M_genes_txs %*% counts(sce)),
+                                colData=colData(sce),
+                                rowRanges=gr_genes[rownames(M_genes_txs)])
+  rowData(sce_g) <- df_genes[rownames(sce_g),]
+  sce_g
+}
+  
+df_counts <- read_csv(SAMPLE_SHEET) %>%
+  ## read SCE files
+  mutate(sce_sq=map(file_scutrquant, readRDS),
+         sce_10x=map(file_cellranger, read10xCounts)) %>%
+  
+  ## adjust cell_ids
+  mutate(sce_10x=map2(sample_id, sce_10x, conform_cell_ids)) %>%
+  
+  ## summarize to gene counts
+  mutate(sce_sq=map(sce_sq, txs_to_genes))
+```
+
+# Plotting Methods
+```{r genes_functions}
+plot_umis_per_gene_compare_dot <- function (sce_x, sce_y, group=NULL,
+                                            label_x="CellRanger UMI Counts Per Gene",
+                                            label_y="scUTRquant UMI Counts Per Gene") {
+  group <- enquo(group)
+  idx_genes <- intersect(rownames(sce_x), rownames(sce_y))
+  idx_cells <- intersect(colnames(sce_x), colnames(sce_y))
+  df <- tibble(x=rowSums(counts(sce_x[idx_genes,idx_cells])),
+               y=rowSums(counts(sce_y[idx_genes,idx_cells])),
+               gene_id=idx_genes) %>%
+    left_join(as_tibble(rowData(sce_y[idx_genes,]), rownames="gene_id2"), by=c("gene_id"="gene_id2"))
+  ggplot(df, aes(x=x+1, y=y+1)) +
+    geom_point(alpha=0.3, size=0.1, pch=16) +
+    geom_abline(slope=1, intercept=0, linetype='dashed') +
+    facet_wrap(vars(!!group)) +
+    scale_x_log10() + scale_y_log10() +
+    labs(x=label_x, y=label_y) +
+    theme_minimal_grid()
+}
+
+plot_umis_per_gene_compare_density <- function (sce_x, sce_y, group=NULL,
+                                                include_zeros=FALSE,
+                                                label_x="CellRanger",
+                                                label_y="scUTRquant") {
+  group <- enquo(group)
+  idx_genes <- intersect(rownames(sce_x), rownames(sce_y))
+  idx_cells <- intersect(colnames(sce_x), colnames(sce_y))
+  df <- tibble(x=rowSums(counts(sce_x[idx_genes,idx_cells])),
+               y=rowSums(counts(sce_y[idx_genes,idx_cells])),
+               gene_id=idx_genes) %>%
+    filter(include_zeros | (x > 0 | y > 0)) %>%
+    mutate(ratio=(1+y)/(1+x)) %>%
+    left_join(as_tibble(rowData(sce_y[idx_genes,]), rownames="gene_id2"), by=c("gene_id"="gene_id2"))
+  ggplot(df, aes(x=ratio)) +  
+    geom_vline(xintercept=1, linetype='dashed') +
+    geom_hline(yintercept=0, color='grey') +
+    geom_density() +
+    scale_x_log10(limits=c(1/100, 100)) +
+    facet_wrap(vars(!!group), ncol=1) +
+    labs(x=sprintf("%s/%s UMI Counts Per Gene", label_y, label_x), y="Density") +
+    theme_minimal_vgrid()
+}
+
+plot_umis_per_gene_compare_violin <- function (sce_x, sce_y, group=NULL,
+                                               include_zeros=FALSE,
+                                               min_counts=0,
+                                               label_x="CellRanger",
+                                               label_y="scUTRquant") {
+  group <- enquo(group)
+  idx_genes <- intersect(rownames(sce_x), rownames(sce_y))
+  idx_cells <- intersect(colnames(sce_x), colnames(sce_y))
+  df_rd <- rowRanges(sce_y[idx_genes,]) %>% 
+    as.data.frame(row.names=names(.)) %>%
+    as_tibble(rownames='gene_id2')
+  df <- tibble(x=rowSums(counts(sce_x[idx_genes,idx_cells])),
+               y=rowSums(counts(sce_y[idx_genes,idx_cells])),
+               gene_id=idx_genes) %>%
+    filter(include_zeros | (x > min_counts | y > min_counts)) %>%
+    mutate(ratio=(1+y)/(1+x)) %>%
+    left_join(df_rd, by=c("gene_id"="gene_id2"))
+  ggplot(df, aes(x=!!group, y=ratio)) +  
+    geom_hline(yintercept=1, linetype='dashed') +
+    geom_violin(draw_quantiles=c(0.25,0.5,0.75)) +
+    scale_y_log10() +
+    coord_cartesian(ylim=c(1/10, 10)) +
+    labs(y=sprintf("%s/%s UMI Counts Per Gene", label_y, label_x)) +
+    theme_bw()
+}
+```
+
+# UTR Type
+## Dots
+```{r gene_utr_type, fig.width=8, fig.height=4}
+df_counts %>%
+  transmute(sample_id, g=map2(sce_10x, sce_sq, plot_umis_per_gene_compare_dot, 
+                              group=atlas.utr_type)) %>%
+  deframe() %>% { 
+    for (id in names(.)) { 
+      ## print locally in this document
+      print(.[[id]] + ggtitle(id))
+    }
+  }
+  
+```
+
+## Violin
+```{r gene_violin_utr_type, fig.width=4, fig.height=4, warning=FALSE}
+df_counts %>%
+  transmute(sample_id, g=map2(sce_10x, sce_sq, plot_umis_per_gene_compare_violin, 
+                              group=atlas.utr_type, include_zeros=FALSE)) %>%
+  deframe() %>% { 
+    for (id in names(.)) { 
+      ## print locally in this document
+      print(.[[id]] + ggtitle(id))
+    }
+  }
+```
+
+# Number of Transcripts
+## Violin
+```{r gene_violin_ntxs, fig.width=4, fig.height=4, warning=FALSE}
+df_counts %>%
+  transmute(sample_id, g=map2(sce_10x, sce_sq, plot_umis_per_gene_compare_violin, 
+                              group=n_txs, include_zeros=FALSE)) %>%
+  deframe() %>% { 
+    for (id in names(.)) { 
+      ## print locally in this document
+      print(.[[id]] + ggtitle(id))
+    }
+  }
+```
+
+# Number of Exons
+## Violin
+```{r gene_violin_nexons, fig.width=4, fig.height=4, warning=FALSE}
+df_counts %>%
+  transmute(sample_id, g=map2(sce_10x, sce_sq, plot_umis_per_gene_compare_violin, 
+                              group=n_exons, include_zeros=FALSE)) %>%
+  deframe() %>% { 
+    for (id in names(.)) { 
+      ## print locally in this document
+      print(.[[id]] + ggtitle(id))
+    }
+  }
+```
+
+# Chromosome
+## Violin
+```{r gene_violin_chr, fig.width=6, fig.height=4, warning=FALSE}
+df_counts %>%
+  transmute(sample_id, g=map2(sce_10x, sce_sq, plot_umis_per_gene_compare_violin, 
+                              group=seqnames, include_zeros=FALSE)) %>%
+  deframe() %>% { 
+    for (id in names(.)) { 
+      ## print locally in this document
+      print(.[[id]] + ggtitle(id))
+    }
+  }
+```
+
+# Strand
+## Violin
+```{r gene_violin_strand, fig.width=6, fig.height=4, warning=FALSE}
+df_counts %>%
+  transmute(sample_id, g=map2(sce_10x, sce_sq, plot_umis_per_gene_compare_violin, 
+                              group=strand, include_zeros=FALSE)) %>%
+  deframe() %>% { 
+    for (id in names(.)) { 
+      ## print locally in this document
+      print(.[[id]] + ggtitle(id))
+    }
+  }
+```
+
+# Has IPA
+## Violin
+```{r gene_violin_ipa, fig.width=6, fig.height=4, warning=FALSE}
+df_counts %>%
+  transmute(sample_id, g=map2(sce_10x, sce_sq, plot_umis_per_gene_compare_violin, 
+                              group=has_ipa, include_zeros=FALSE)) %>%
+  deframe() %>% { 
+    for (id in names(.)) { 
+      ## print locally in this document
+      print(.[[id]] + ggtitle(id))
+    }
+  }
+```
+
+# Number of Atlas Cell Types
+## Violin
+```{r gene_violin_ncelltypes, fig.width=6, fig.height=4, warning=FALSE}
+df_counts %>%
+  transmute(sample_id, g=map2(sce_10x, sce_sq, plot_umis_per_gene_compare_violin, 
+                              group=cut_number(atlas.ncelltypes_gene, n=6), 
+                              include_zeros=FALSE)) %>%
+  deframe() %>% { 
+    for (id in names(.)) { 
+      ## print locally in this document
+      print(.[[id]] + ggtitle(id))
+    }
+  }
+```
+
+### Min. 50 UMIs
+```{r gene_violin_ncelltypes_umi50, fig.width=6, fig.height=4, warning=FALSE}
+df_counts %>%
+  transmute(sample_id, g=map2(sce_10x, sce_sq, plot_umis_per_gene_compare_violin, 
+                              group=cut_number(atlas.ncelltypes_gene, n=8), 
+                              include_zeros=FALSE, min_counts=50)) %>%
+  deframe() %>% { 
+    for (id in names(.)) { 
+      ## print locally in this document
+      print(.[[id]] + ggtitle(id))
+    }
+  }
+```
+
+---
+
+# Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```

@@ -1,0 +1,131 @@
+---
+title: "Ery Trajectory - DGE Tests"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+Here we compare an expanded set of cell types, with an emphasis on differentiation.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(cowplot)
+library(ggridges)
+library(SingleCellExperiment)
+library(scran)
+library(scater)
+library(BiocParallel)
+```
+
+## Parameters
+```{r set_params}
+set.seed(20211026)
+register(MulticoreParam(10))
+
+celltypes <- c("14/Stem", "0", "3", "10", "8", "13", "11", "12/Ery")
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+sce <- readRDS("data/sce/hspcs.genes.full_annot.Rds")
+```
+
+## Preprocessing
+```{r prepare_data}
+idx_cells <- sce$clusters %in% celltypes
+
+sce %<>% `[`(, idx_cells)
+
+gene_id2sym <- rowData(sce) %>% as_tibble %$% setNames(gene_symbol, gene_id)
+
+## include logcounts
+sce <- logNormCounts(sce)
+```
+
+# Analysis
+
+# Two-Sample Tests
+```{r generate_pairs}
+test_pairs <- length(celltypes) %>% { vector("list", .*(.-1)/2) }
+
+k <- 1
+for (i in seq(1, length(celltypes)-1)) {
+  for (j in seq(1, length(celltypes) - i)) {
+    test_pairs[[k]] <- c(celltypes[j], celltypes[i+j])
+    k <- k + 1
+  }
+}
+```
+
+```{r t_tests}
+res <- bplapply(test_pairs, function (p) {
+  findMarkers(sce, groups=sce$clusters, restrict=p) %>%
+    `[[`(1) %>%
+    as_tibble(rownames="gene_id") %>%
+    dplyr::rename(pval=p.value, qval=FDR, log2FC=summary.logFC) %>%
+    mutate(start=p[[1]], end=p[[2]]) %>%
+    select(gene_id, start, end, log2FC, pval, qval)
+})
+
+df_tests <- do.call(rbind, res) %>%
+  mutate(gene_symbol=gene_id2sym[gene_id],
+         qval=p.adjust(pval, "BH")) %>%
+  select(gene_symbol, gene_id, everything())
+
+df_tests %>% arrange(pval, log2FC) %>% head(50) %>% knitr::kable()
+```
+
+```{r hist_pvals}
+hist(df_tests$pval, breaks=40, xlab="p-value",
+     main="Distribution of p-values for Two-Sample T Tests")
+```
+
+
+```{r hists_by_celltype, fig.width=8, fig.height=12}
+df_tests %>%
+  mutate(test_pair=str_c(end, " vs ", start)) %>%
+  ggplot(aes(x=pval, y=test_pair)) +
+  geom_density_ridges(stat='binline', bins=40, scale=0.95) +
+  labs(x="p-value", y=NULL, title="T Tests") +
+  theme_minimal_vgrid()
+```
+
+# Export
+```{r export}
+sprintf("data/dge/%s-ery-trajectory-pairwise-t-tests.tsv.gz", format(Sys.time(), '%Y%m%d')) %>%
+  write_tsv(x=df_tests)
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash conda_env, comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

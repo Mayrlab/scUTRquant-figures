@@ -1,0 +1,176 @@
+---
+title: "Two-Sample Test - HSC-Ery"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+This document demonstrates the use of a two-sample bootstrap test using the 
+HSPC data from *Dahlin et al., 2018* and *Wolf et al., 2019*.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(cowplot)
+library(SingleCellExperiment)
+library(scutrboot)
+```
+
+## Parameters
+```{r set_params}
+set.seed(20211017)
+N_BOOTSTRAPS=10000
+MIN_NCELLS=50
+```
+
+## Functions
+
+```{r methods}
+plot_pval_histogram <- function (df) {
+  ggplot(df, aes(x=pval)) +
+    geom_histogram(boundary=0, bins=41, 
+                   color='black', fill='lightgrey', size=0.2) +
+    scale_x_continuous(expand=c(0.02,0.02)) +
+    scale_y_continuous(expand=c(0,0,0,100)) +
+    labs(x="p-values", y="Genes") +
+    theme_bw()
+}
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+sce <- readRDS("data/sce/hspcs.txs.full_annot.Rds")
+```
+
+## Preprocessing
+```{r prepare_data}
+sce %<>% `[`(!rowData(.)$is_blacklisted,)
+idx_multi <- rowData(sce)$atlas.utr_type == 'multi'
+idx_consistent <- rowData(sce)$is_consistent
+```
+
+# Analysis
+
+## WD Test: Ery vs HSC
+
+```{r test_ery_hsc_wd}
+df_test_ery_hsc_wd <- testTwoSample(sce[idx_multi,], assayName="normcounts",
+                                    sampleKey="clusters", geneKey="gene_id",
+                                    sample0="14/Stem", sample1="12/Ery", 
+                                    statistic="WD", nBootstraps=N_BOOTSTRAPS, 
+                                    minCellsPerGene=MIN_NCELLS, 
+                                    featureExclude="is_ipa", 
+                                    ) %>%
+  as_tibble() %>%
+  mutate(qval=p.adjust(pval, method="BH"))
+```
+
+### P-Values Plot
+```{r plot_pvals_wd, fig.width=4, fig.height=2}
+plot_pval_histogram(df_test_ery_hsc_wd)
+
+ggsave("output/figure4/sup-pvals-ery-hsc-wd.pdf", width=4, height=2, dpi=300)
+```
+
+### Export
+```{r export_wd}
+sprintf("data/dtu/%s-hsc-ery-twosample-wd.min50.boot10k.tsv.gz", 
+        format(Sys.time(), '%Y%m%d')) %>%
+  write_tsv(x=df_test_ery_hsc_wd)
+```
+
+## LUI Test: Ery vs HSC
+
+```{r test_ery_hsc_lui}
+df_test_ery_hsc_lui <- testTwoSample(sce[idx_multi & idx_consistent,], assayName="normcounts",
+                                    sampleKey="clusters", geneKey="gene_id",
+                                    sample0="14/Stem", sample1="12/Ery", 
+                                    statistic="UI", featureIndex="is_distal",
+                                    nBootstraps=N_BOOTSTRAPS, 
+                                    minCellsPerGene=MIN_NCELLS, 
+                                    featureExclude="is_ipa") %>%
+  as_tibble() %>%
+  mutate(qval=p.adjust(pval, method="BH"))
+```
+
+### P-Values Plot
+```{r plot_pvals_lui, fig.width=4, fig.height=2}
+plot_pval_histogram(df_test_ery_hsc_lui)
+
+ggsave("output/figure4/sup-pvals-ery-hsc-lui.pdf", width=4, height=2, dpi=300)
+```
+
+### Export
+```{r export_lui}
+sprintf("data/dtu/%s-hsc-ery-twosample-lui.min50.boot10k.tsv.gz", 
+        format(Sys.time(), '%Y%m%d')) %>%
+  write_tsv(x=df_test_ery_hsc_lui)
+```
+
+## IPA Test: Ery vs HSC
+
+```{r test_ery_hsc_ipa}
+idx_ipa <- rowData(sce) %>%
+  as_tibble %>%
+  group_by(gene_id) %>%
+  mutate(has_ipa=any(is_ipa), has_nipa=any(!is_ipa)) %>%
+  ungroup() %>%
+  select(transcript_id, is_ipa, has_ipa, has_nipa) %>%
+  filter(has_ipa, has_nipa) %$%
+  transcript_id
+
+df_test_ery_hsc_ipa <- testTwoSample(sce[idx_ipa,], assayName="normcounts",
+                                    sampleKey="clusters", geneKey="gene_id",
+                                    sample0="14/Stem", sample1="12/Ery", 
+                                    statistic="UI", featureIndex="is_ipa",
+                                    nBootstraps=N_BOOTSTRAPS, 
+                                    minCellsPerGene=MIN_NCELLS) %>%
+  as_tibble() %>%
+  mutate(qval=p.adjust(pval, method="BH"))
+```
+
+### P-Values Plot
+```{r plot_pvals_ipa, fig.width=4, fig.height=2}
+plot_pval_histogram(df_test_ery_hsc_ipa)
+
+ggsave("output/figure4/sup-pvals-ery-hsc-ipa.pdf", width=4, height=2, dpi=300)
+```
+
+### Export
+```{r export_ipa}
+sprintf("data/dtu/%s-hsc-ery-twosample-ipa.min50.boot10k.tsv.gz", 
+        format(Sys.time(), '%Y%m%d')) %>%
+  write_tsv(x=df_test_ery_hsc_ipa)
+```
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

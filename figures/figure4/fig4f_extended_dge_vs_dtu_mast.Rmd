@@ -1,0 +1,230 @@
+---
+title: "Expanded Cell Types - DGE vs DTU Tests"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+This compares the overlap of significant genes detected by differential gene 
+expression testing versus differential isoform usage testing.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(writexl)
+library(cowplot)
+```
+
+## Parameters
+```{r set_params}
+MAX_QVAL=0.05
+MIN_L2FC=log2(1.5)
+MIN_WD=0.15
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+df_dtu <- read_tsv("data/dtu/20211026-diff-pairwise-wd-tests.min50.boot10k.tsv.gz") %>%
+  dplyr::rename(gene_id=gene)
+df_dge <- readRDS("data/dge/merged.pairwise_DEGs.rds") %>%
+  rename(start=cell1, end=cell2)
+```
+
+## Preprocessing
+```{r prepare_data}
+df_sig_dtu <- df_dtu %>%
+  mutate(sig_isoform=qval < MAX_QVAL & abs(stat) >= MIN_WD) %>%
+  select(gene_id, start, end, sig_isoform)
+
+df_sig_dge <- df_dge %>%
+  mutate(sig_gene=p_val_adj < MAX_QVAL & abs(avg_log2FC) >= MIN_L2FC) %>%
+  select(gene_id, start, end, sig_gene)
+
+df_sig_all <- full_join(df_sig_dtu, df_sig_dge, by=c("gene_id", "start", "end")) %>%
+  replace_na(list(sig_isoform=FALSE, sig_gene=FALSE)) %>%
+  mutate(sig=ifelse(sig_isoform & sig_gene, "Both", 
+                    ifelse(sig_isoform, "DTU", 
+                           ifelse(sig_gene, "DGE", "NS"))),
+         sig=factor(sig, levels=c("NS", "DTU", "Both", "DGE")),
+         test_label=str_c(end, " vs ", start))
+
+df_sig_multi <- left_join(df_sig_dtu, df_sig_dge, by=c("gene_id", "start", "end")) %>%
+  replace_na(list(sig_isoform=FALSE, sig_gene=FALSE)) %>%
+  mutate(sig=ifelse(sig_isoform & sig_gene, "Both", 
+                    ifelse(sig_isoform, "DTU",
+                           ifelse(sig_gene, "DGE", "NS"))),
+         sig=factor(sig, levels=c("NS", "DTU", "Both", "DGE")),
+         test_label=str_c(end, " vs ", start))
+```
+
+# All Genes
+## Everything
+```{r plot_all_ns, fig.width=6, fig.height=5}
+colvals_ns <- c(NS="#CCCCCC", DTU="#EEE643", Both="#2E9F72", DGE="#2170B1") %>% {
+  setNames(colorspace::desaturate(., 0.2), names(.))
+}
+
+df_sig_all %>%
+  mutate(test_label=fct_reorder(test_label, sig, . %>% { sum(. != "NS") }, .desc=TRUE)) %>%
+  ggplot(aes(x=test_label, fill=sig)) +
+  geom_bar(position='stack', color='black', size=0.1) +
+  scale_fill_manual(breaks=names(colvals_ns), values=colvals_ns) +
+  scale_x_discrete(guide=guide_axis(angle=45)) +
+  scale_y_continuous(expand=c(0,0,0.05,0)) +
+  labs(x="Compared Cell Types", y="All Tested Genes", fill="Difference") +
+  theme_bw()
+
+#ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-all-ns.pdf", width=6, height=5, dpi=300)
+```
+
+## Plot Positive
+```{r plot_all, fig.width=6, fig.height=5}
+colvals <- c(DTU="#EEE643", Both="#2E9F72", DGE="#2170B1") %>% {
+  setNames(colorspace::desaturate(., 0.2), names(.))
+}
+
+df_sig_all %>%
+  filter(sig != "NS") %>%
+  ggplot(aes(x=fct_infreq(test_label), fill=sig)) +
+  geom_bar(position='stack', color='black', size=0.1) +
+  scale_fill_manual(values=colvals) +
+  scale_x_discrete(guide=guide_axis(angle=45)) +
+  scale_y_continuous(expand=c(0,0,0.05,0)) +
+  labs(x="Compared Cell Types", y="Significant Genes", fill="Difference") +
+  theme_bw()
+
+#ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-all.pdf", width=6, height=5, dpi=300)
+```
+
+## Table 
+```{r tbl_all_genes}
+df_sig_all %>%
+  group_by(start, end) %>%
+  dplyr::count(sig_gene, sig_isoform) %>%
+  knitr::kable()
+```
+
+# Multi-UTR Genes
+## Plot Positive-Only
+```{r plot_multi, fig.width=6, fig.height=5}
+df_sig_multi %>%
+  filter(sig != "NS") %>%
+  ggplot(aes(x=fct_infreq(test_label), fill=sig)) +
+  geom_bar(position='stack', color='black', size=0.1) +
+  scale_fill_manual(breaks=names(colvals), values=colvals) +
+  scale_x_discrete(guide=guide_axis(angle=45)) +
+  scale_y_continuous(expand=c(0,0,0.05,0)) +
+  labs(x="Compared Cell Types", y="Significant Multi-UTR Genes", 
+       fill="Difference") +
+  theme_bw()
+
+#ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-multi.pdf", width=6, height=5, dpi=300)
+```
+
+## Plot All
+```{r plot_multi_ns, fig.width=6, fig.height=5}
+colvals_ns <- c(NS="#CCCCCC", DTU="#EEE643", Both="#2E9F72", DGE="#2170B1") %>% {
+  setNames(colorspace::desaturate(., 0.2), names(.))
+}
+
+df_sig_multi %>%
+  mutate(test_label=fct_reorder(test_label, sig, . %>% { sum(.=="DTU") }, .desc=TRUE)) %>%
+  ggplot(aes(x=test_label, fill=sig)) +
+  geom_bar(position='stack', color='black', size=0.1) +
+  scale_fill_manual(breaks=names(colvals_ns), values=colvals_ns) +
+  scale_x_discrete(guide=guide_axis(angle=45)) +
+  scale_y_continuous(expand=c(0,0,0.05,0)) +
+  labs(x="Compared Cell Types", y="Coexpressed Multi-UTR Genes", 
+       fill="Difference") +
+  theme_bw()
+
+#ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-multi-ns.pdf", width=6, height=5, dpi=300)
+```
+
+## Table 
+```{r tbl_multi_genes}
+df_sig_multi %>%
+  group_by(start, end) %>%
+  dplyr::count(sig_gene, sig_isoform) %>%
+  knitr::kable()
+```
+
+## Chi-Square Tests
+```{r}
+df_sig_multi %>%
+  group_by(start, end) %>%
+  nest() %>%
+  transmute(start, end, res=map(data, ~ broom::tidy(chisq.test(.x$sig_gene, .x$sig_isoform, simulate.p.value=TRUE)))) %>%
+  unnest(res) %>%
+  select(start, end, statistic, p.value) %>%
+  knitr::kable()
+```
+
+
+```{r tbl_wide}
+df_chisq <- df_sig_multi %>%
+  group_by(start, end) %>%
+  nest() %>%
+  transmute(start, end, res=map(data, ~ broom::tidy(chisq.test(.x$sig_gene, .x$sig_isoform, simulate.p.value=TRUE, B=2000)))) %>%
+  unnest(res) %>%
+  select(start, end, statistic, p.value)
+
+map_sig <- c("FALSE_FALSE"="NS",
+             "FALSE_TRUE"="DTU",
+             "TRUE_FALSE"="DGE",
+             "TRUE_TRUE"="Both")
+
+df_wide <- df_sig_multi %>%
+  group_by(start, end) %>%
+  dplyr::count(sig_gene, sig_isoform) %>%
+  mutate(result=map_sig[str_c(sig_gene,sig_isoform, sep="_")]) %>%
+  ungroup() %>%
+  pivot_wider(id_cols=c("start", "end"), names_from="result", values_from="n", values_fill=0L) %>%
+  mutate("Coexpressed multi-UTR genes"=NS+DTU+DGE+Both) %>%
+  left_join(df_chisq, by=c("start", "end")) %>%
+  rename("Cell Type 1"=start,
+         "Cell Type 2"=end,
+         "Chi-squared"=statistic,
+         "p-value"=p.value) %>%
+  select(`Cell Type 1`, `Cell Type 2`, `Coexpressed multi-UTR genes`,
+         NS:Both, `Chi-squared`, `p-value`)
+
+knitr::kable(df_wide)
+```
+
+## Export Table
+```{r export_tbl}
+write_xlsx(df_wide, "output/tables/tbl3-extended-celltypes-chisq-results-mast.xlsx")
+```
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

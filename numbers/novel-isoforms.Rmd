@@ -1,0 +1,90 @@
+---
+title: "Isoform Counts"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+This document counts the novel isoforms added to the GENCODE annotation.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(plyranges)
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+gr_txs <- read_gff2("data/gtf/adult.utrome.e3.t200.f0.999.w500.gtf.gz") %>%
+  filter(type == 'transcript')
+```
+
+## Preprocessing
+```{r prepare_data}
+df_txs <- mcols(gr_txs) %>%
+  as_tibble %>%
+  mutate(novel=str_detect(transcript_name, pattern="UTR[-+]"),
+         upstream=str_detect(transcript_name, pattern="UTR[-]"),
+         downstream=str_detect(transcript_name, pattern="UTR[+]"))
+```
+
+# Analysis
+
+## Novel Transcripts
+
+```{r tbl_novel, fig.width=5, fig.height=4}
+df_txs %>%
+  count(novel) %>%
+  knitr::kable()
+```
+
+## Novel Upstream vs Downstream Transcripts
+
+```{r tbl_novel_position, fig.width=5, fig.height=4}
+df_txs %>%
+  count(upstream, downstream) %>%
+  knitr::kable()
+```
+
+## Genes with Novel Isoforms
+```{r tbl_novel_gene}
+df_txs %>%
+  group_by(gene_id) %>%
+  summarize(has_novel=any(novel), .groups='drop') %>%
+  count(has_novel) %>%
+  knitr::kable()
+```
+
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

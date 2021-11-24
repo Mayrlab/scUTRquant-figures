@@ -1,0 +1,209 @@
+---
+title: "Ery Bootstrap Plots - Batches"
+author: "Mervin M Fansler"
+date: '`r format(Sys.time(), "%d %B %Y")`'
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+Illustrate use of bootstrapping for estimating mean LUI usage. Splitting by batches
+to emphasize variance between batches is smaller than variance across celltypes.
+
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(SingleCellExperiment)
+library(Matrix)
+library(matrixStats)
+library(magrittr)
+library(tidyverse)
+library(cowplot)
+library(colorspace)
+#library(scutrboot)
+```
+
+## Parameters
+```{r set_params}
+set.seed(20211021)
+N_BOOTSTRAPS=2000
+MIN_NCELLS=50
+
+genes_to_plot <- c("Jpt1", "Lmo4", "Cd47")
+
+celltype_ery <- c("14/Stem"="HSC", "0"="Prog1",
+                  "3"="Prog2", "10"="MEP", "8"="ProE",
+                  "13"="Baso1", "11"="Baso2", "12/Ery"="Ery")
+
+colors_ery <- c("HSC"="#826CC7", "Prog1"="#2B4285",
+                "Prog2"="#8BBFE9", "MEP"="#AACA6A", "ProE"="#ECE592",
+                "Baso1"="#F3A73B", "Baso2"="#EB3223", "Ery"="#7F170E") %>%
+  { setNames(desaturate(lighten(.,0.2), 0.3), names(.)) }
+```
+
+## Functions
+
+```{r methods}
+boot_sparse <- function (M, num_boot=10) {
+  ## the kronecker product captures all possible values we might fill in
+  Y <- as(kronecker(M, Matrix(rep(1, num_boot), 1)), "dgCMatrix")
+  
+  ## let's provide column labels, using existing ones if present (default: "col1_1")
+  colnames(Y) <- c(t(outer(colnames(M, do.NULL=FALSE), seq_len(num_boot), paste, sep='_')))
+  
+  ## generate multinomial samples and write them into the values
+  Y@x <- as.double(unlist(sapply(colSums(M), function (n) {
+    rmultinom(num_boot, n, rep(1,n))
+  })))
+  
+  ## keep it sparsey sparse
+  drop0(Y)
+}
+
+bootstrap_lui <- function (cts, M.groups, M.LU, M.gene, num_boot=100) {
+  M.bs <- boot_sparse(M.groups, num_boot)
+  LUI.bs <- ((M.LU %*% cts) %*% M.bs) / ((M.gene %*% cts) %*% M.bs)
+  LUI.bs
+}
+
+plot_lui_bootstraps <- function (gene, df, keep_order=TRUE) {
+  df %>%
+    filter(gene == !!gene) %>%
+    ggplot(aes(x=cell_type, y=lui, fill=cell_type, group=ct_b)) +
+    geom_boxplot(outlier.shape=NA, size=0.2) +
+    coord_flip() +
+    scale_y_continuous(limits=c(0,1), breaks=seq(0,1,0.1)) +
+    scale_fill_manual(values=colors_ery) +
+    labs(x=NULL, y="LUI") +
+    guides(fill=FALSE) +
+    theme_bw()
+}
+
+```
+
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+sce <- readRDS("data/sce/hspcs.txs.full_annot.Rds")
+```
+
+## Preprocessing
+```{r filter_data}
+idx_cells <- sce$clusters %in% names(celltype_ery)
+idx_txs <- rowData(sce) %>% { (!.$is_ipa) & (.$gene_symbol %in% genes_to_plot) }
+
+sce %<>% `[`(idx_txs, idx_cells)
+
+colData(sce)['cell_type'] <- factor(celltype_ery[sce$clusters], levels=celltype_ery)
+```
+
+## Design Matrices
+```{r design_mats}
+M_cell_batch <- colData(sce) %>% 
+  { str_c(.$cell_type, "/", .$sample) } %>%
+  fac2sparse %>% t()
+
+idx_ctbs <- M_cell_batch %>%
+  colSums() %>%
+  enframe("ct_b", "n_cells") %>%
+  mutate(ct=str_extract(ct_b, "^[^/]+")) %>%
+  group_by(ct) %>%
+  slice_max(n_cells, n=3) %>%
+  ungroup() %$%
+  ct_b
+
+M_cell_batch %<>% `[`(,idx_ctbs)
+
+M_gene_tx <- rowData(sce)$gene_symbol %>% fac2sparse
+M_lu_tx <- drop0(M_gene_tx %*% Diagonal(ncol(M_gene_tx), rowData(sce)$is_lu))
+```
+
+# Compute LUI Bootstraps
+```{r compute_lui}
+cts_tx_cell <- assay(sce, "normcounts")
+
+ncells_gene_batch <- ((M_gene_tx %*% cts_tx_cell) > 0) %*% M_cell_batch
+
+df_ncells <- ncells_gene_batch %>%
+  as.matrix %>% as_tibble(rownames="gene") %>%
+  pivot_longer(cols=-1, names_to="ct_b", names_pattern="^([^_]+)", values_to="ncells") %>%
+  mutate(cell_type=factor(str_extract(ct_b, "^[^/]+"), levels=rev(celltype_ery)),
+         batch=str_extract(ct_b, "[^/]+$"))
+  
+lui_bs <- bootstrap_lui(cts_tx_cell, M_cell_batch, M_lu_tx, M_gene_tx, num_boot=N_BOOTSTRAPS)
+
+df_bs <- lui_bs %>%
+  as.matrix %>%
+  as_tibble(rownames='gene') %>%
+  pivot_longer(cols=-1, names_to="ct_b", names_pattern="^([^_]+)", values_to="lui") %>%
+  left_join(df_ncells, by=c("gene", "ct_b"))
+
+ct_bs <- outer(rev(celltype_ery), unique(sce$sample), paste, sep="/") %>% 
+  t %>% as.vector %>% 
+  { .[. %in% df_bs$ct_b] }
+
+df_bs %<>%
+  mutate(ct_b=factor(ct_b, levels=ct_bs))
+```
+
+# Plots
+## Genes
+```{r plots, fig.width=5, fig.height=5}
+
+plot_lui_bootstraps_manual <- function (gene, df, keep_order=TRUE) {
+  df_tmp <- df %>%
+    filter(gene == !!gene) %T>%
+    { axis_limits <<- c(min(.$lui), max(.$lui)+0.05) } %>%
+    group_by(ct_b, cell_type) %>%
+    summarize(ci025=quantile(lui, 0.025), ci975=quantile(lui, 0.975),
+              ci250=quantile(lui, 0.250), ci750=quantile(lui, 0.750),
+              ci500=median(lui), ncells=first(ncells), .groups='drop')
+  
+  
+  ggplot(df_tmp, aes(x=cell_type, y=ci500, fill=cell_type, group=ct_b)) +
+    geom_errorbar(aes(ymin=ci025, ymax=ci975, color=cell_type), size=0.5,
+                  position=position_dodge(width=0.95), width=0.5) +
+    geom_crossbar(aes(ymin=ci250, ymax=ci750, color=cell_type), size=0.2,
+                  position=position_dodge(width=0.95), width=0.8) +
+    geom_crossbar(aes(ymin=ci500, ymax=ci500), size=0.1, color='black',
+                  position=position_dodge(width=0.95), width=0.8) +
+    geom_text(aes(label=ncells, y=axis_limits[2]),
+              position=position_dodge(width=0.95), size=3, hjust=1) +
+    coord_flip(clip='off', ylim=axis_limits) +
+    scale_y_continuous(breaks=seq(0,1,0.1)) +
+    scale_fill_manual(values=colors_ery) +
+    scale_color_manual(values=colors_ery) +
+    labs(x=NULL, y="LUI") +
+    guides(fill=FALSE, color=FALSE) +
+    theme_bw()
+}
+
+for (g in genes_to_plot) {
+  plot_lui_bootstraps_manual(g, df_bs) %>% print()
+  
+  ggsave(sprintf("output/figure4/fig4ab-bootstrap-ery-%s.pdf", g), width=5, height=5, dpi=300)
+}
+```
+
+# Non-Zero Cell Counts
+```{r}
+cts_genes_cells <- M_gene_tx %*% cts_tx_cell
+
+ncells_genes_batches <- (cts_genes_cells > 0) %*% M_cell_batch[,ct_bs]
+#ncells_genes_batches
+```
+
+---
+
+# Session Info
+
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```

@@ -1,0 +1,184 @@
+---
+title: "IPA Test Results - Erythrocyte Trajectory"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+This analysis processes the two-sample LUI test results to identify significant
+isoform changes in the HSC to Erythrocyte trajectory from the *Dahlin et al., 2018*
+dataset. Significant genes are then plotted as a heat map.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(cowplot)
+library(SingleCellExperiment)
+library(Matrix)
+library(matrixStats)
+library(pheatmap)
+```
+
+## Parameters
+```{r set_params}
+set.seed(20211020)
+MIN_DIPA=0.15
+MAX_QVAL=0.05
+MIN_NCELLS=50
+```
+
+## Functions
+
+```{r methods}
+
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+df_tests <- read_tsv("data/dtu/20211019-ery-trajectory-pairwise-ipa-tests.min50.boot10k.tsv.gz", 
+                     col_types='ccccddi') %>%
+  mutate(test=str_c(end, " vs ", start),
+         qval=p.adjust(pval, method='BH'),
+         sig=(qval < MAX_QVAL) & (abs(stat) >= MIN_DIPA))
+
+sce <- readRDS("data/sce/hspcs.txs.full_annot.Rds")
+```
+
+## Preprocessing
+### Compute Summary Tables
+```{r compute_summaries}
+df_summary <- df_tests %>%
+  group_by(test) %>%
+  summarize(n_tested=n(),
+            n_decreasing=sum(sig & stat < 0, na.rm=TRUE),
+            n_increasing=sum(sig & stat > 0, na.rm=TRUE),
+            pct_decreasing=100*n_decreasing/n_tested,
+            pct_increasing=100*n_increasing/n_tested,
+            .groups='drop')
+
+df_sig_genes <- df_tests %>%
+  filter(sig) %>%
+  group_by(gene_symbol, gene) %>%
+  summarize(max_test=test[which.max(abs(stat))],
+            max_dipa=stat[which.max(abs(stat))],
+            .groups='drop')
+
+genes_increasing <- filter(df_sig_genes, max_dipa > 0)$gene
+genes_decreasing  <- filter(df_sig_genes, max_dipa < 0)$gene
+```
+
+### Compute Significant IPA Rates
+```{r compute_ipa_rates}
+celltypes <- unique(c(df_tests$start, df_tests$end))
+
+idx_cells <- sce$clusters %in% celltypes
+idx_sig_genes <- rowData(sce) %>%
+  { (.$gene_id %in% df_sig_genes$gene) }
+
+## filter sce
+sce %<>% `[`(idx_sig_genes, idx_cells)
+cts_tx_cell <- assay(sce, "normcounts")
+
+## design matrices
+M_cell_celltype <- t(fac2sparse(sce$clusters))[,celltypes]
+M_gene_tx <- fac2sparse(rowData(sce)$gene_id)
+M_ipa_tx <- M_gene_tx %*% Diagonal(nrow(sce), rowData(sce)$is_ipa)
+
+## compute ipa rate
+cts_tx_celltype <- cts_tx_cell %*% M_cell_celltype
+ipa_gene_celltype <- (M_ipa_tx %*% cts_tx_celltype) / (M_gene_tx %*% cts_tx_celltype)
+
+## count expressing cells
+ncells_gene_celltype <- ((M_gene_tx %*% cts_tx_cell) > 0) %*% M_cell_celltype
+
+## filter luis
+idx_expressed_genes <- rowAlls(drop0(ncells_gene_celltype >= MIN_NCELLS), value=TRUE)
+fipa_gene_celltype <- as.matrix(ipa_gene_celltype[idx_expressed_genes,])
+```
+
+
+### Compute Ordering
+```{r compute_gene_orders}
+ipa_medians <- setNames(rowMedians(fipa_gene_celltype), rownames(fipa_gene_celltype))
+
+idx_increasing <- which(names(ipa_medians) %in% genes_increasing)
+idx_decreasing <- which(names(ipa_medians) %in% genes_decreasing)
+
+idx_increasing %<>% `[`(order(ipa_medians[.]))
+idx_decreasing %<>% `[`(order(ipa_medians[.]))
+
+idx_ordered <- c(idx_increasing, idx_decreasing)
+```
+
+# Summary Overview
+## Significant Tests
+
+```{r sig_tests}
+knitr::kable(df_summary)
+```
+
+## Significant Genes
+```{r sig_genes}
+df_sig_genes %>%
+  summarize(n_decreasing=sum(max_dipa < 0),
+            n_increasing=sum(max_dipa > 0)) %>%
+  knitr::kable()
+
+df_sig_genes %>%
+  group_by(max_test) %>%
+  summarize(n_decreasing=sum(max_dipa < 0),
+            n_increasing=sum(max_dipa > 0),
+            .groups='drop') %>%
+  knitr::kable()
+```
+
+
+# Plot Heatmap
+
+```{r fig_heatmap, fig.width=4, fig.height=4}
+NCOLORS=100
+breaks.point <- seq(0, 1, length.out=NCOLORS + 1)
+
+pheatmap(fipa_gene_celltype[idx_ordered,], 
+         cluster_rows=FALSE, cluster_cols=FALSE, 
+         labels_col=c("HSC", "Prog1", "Prog2", "MEP", "ProE", "Baso1", "Baso2", "Ery"),
+         show_rownames=FALSE, scale='none', fontsize=8,
+         #color=colorRampPalette(c("#336BA8", "white", "#D62125"))(NCOLORS),
+         color=colorspace::desaturate(viridis::viridis(n=100), 0.1),
+         breaks=breaks.point, angle_col=0) %T>%
+  save_plot(filename="output/figure4/fig4e-ipa-hsc-ery-path.pdf",
+            base_width=4, base_height=4)
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

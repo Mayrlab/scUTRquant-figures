@@ -1,0 +1,131 @@
+---
+title: "Pairwise LUI Tests - Ery Path Batches"
+author: "Mervin Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_levels: 2
+---
+
+# Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(SingleCellExperiment)
+library(Matrix)
+library(matrixStats)
+library(tidyverse)
+library(magrittr)
+library(cowplot)
+library(ggridges)
+library(colorspace)
+library(BiocParallel)
+library(scutrboot)
+
+register(MulticoreParam(6))
+```
+
+## Parameters
+```{r set_params}
+set.seed(20211021)
+N_BOOTSTRAPS=10000
+MIN_NCELLS=50
+
+genes_to_plot <- c("Jpt1", "Lmo4")
+
+celltype_ery <- c("14/Stem"="HSC", "0"="Prog1",
+                  "3"="Prog2", "10"="MEP", "8"="ProE",
+                  "13"="Baso1", "11"="Baso2", "12/Ery"="Ery")
+
+colors_ery <- c("HSC"="#826CC7", "Prog1"="#2B4285",
+                "Prog2"="#8BBFE9", "MEP"="#AACA6A", "ProE"="#ECE592",
+                "Baso1"="#F3A73B", "Baso2"="#EB3223", "Ery"="#7F170E") %>%
+  { setNames(desaturate(lighten(.,0.2), 0.3), names(.)) }
+```
+
+# Functions
+```{r}
+
+```
+
+# Data
+## Loading
+```{r load_data}
+sce <- readRDS("data/sce/hspcs.txs.full_annot.Rds")
+
+idx_cells <- sce$clusters %in% names(celltype_ery)
+idx_txs <- rowData(sce) %>% { (!.$is_ipa) & (.$gene_symbol %in% genes_to_plot) }
+
+# filter to multiutrs in celltypes of interest
+sce %<>% `[`(idx_txs, idx_cells)
+
+colData(sce)['cell_type'] <- factor(celltype_ery[sce$clusters], levels=celltype_ery)
+colData(sce)['celltype_batch'] <- colData(sce) %>% { str_c(.$cell_type, "/", .$sample) }
+
+gene_id2sym <- rowData(sce) %>% as_tibble %$% setNames(gene_symbol, gene_id)
+```
+
+## Preprocessing
+```{r }
+M_cell_batch <- t(fac2sparse(sce$celltype_batch))
+
+test_pairs <- M_cell_batch %>%
+  colSums() %>%
+  enframe("ct_b", "n_cells") %>%
+  mutate(ct=str_extract(ct_b, "^[^/]+")) %>%
+  group_by(ct) %>%
+  slice_max(n_cells, n=3) %>%
+  mutate(test_pairs=list(ct_b[1:2], ct_b[2:3], ct_b[c(1,3)])) %>%
+  ungroup() %$%
+  test_pairs
+```
+
+# Two-Sample Tests
+```{r lui_tests}
+res <- bplapply(test_pairs, function (p) {
+  testTwoSample(sce, assayName="normcounts",
+                sampleKey="celltype_batch", geneKey="gene_id",
+                sample0=p[[1]], sample1=p[[2]], 
+                statistic="UI", featureIndex="is_distal",
+                nBootstraps=N_BOOTSTRAPS, minCellsPerGene=MIN_NCELLS) %>%
+    as_tibble() %>%
+    mutate(start=p[[1]], end=p[[2]]) %>%
+    select(gene, start, end, stat, pval, bootstraps)
+})
+
+df_tests <- do.call(rbind, res) %>%
+  mutate(gene_symbol=gene_id2sym[gene],
+         celltype=factor(str_extract(start, "^[^/]+"), levels=celltype_ery),
+         qval=p.adjust(pval, "BH")) %>%
+  select(gene_symbol, gene, celltype, everything())
+
+df_tests %>% arrange(pval) %>% head(50) %>% knitr::kable()
+```
+
+```{r hist_pvals}
+hist(df_tests$pval, breaks=40, xlab="p-value",
+     main="Distribution of p-values for Two-Sample LUI Tests")
+```
+
+
+```{r hists_by_celltype, fig.width=8, fig.height=12}
+df_tests %>%
+  mutate(test_pair=str_c(start, " vs ", end)) %>%
+  ggplot(aes(x=pval, y=celltype)) +
+  geom_density_ridges(stat='binline', bins=40, scale=0.95) +
+  labs(x="p-value", y=NULL, title="LUI Tests") +
+  theme_minimal_vgrid()
+```
+
+# Export
+```{r export}
+sprintf("data/dtu/%s-ery-batches-pairwise-lui-tests.min50.boot10k.tsv.gz", format(Sys.time(), '%Y%m%d')) %>%
+  write_tsv(x=df_tests)
+```
+
+---
+
+# Session Info
+
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```

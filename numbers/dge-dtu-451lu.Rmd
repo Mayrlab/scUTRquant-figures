@@ -1,0 +1,93 @@
+---
+title: "DTU vs DGE in 451Lu Data"
+author: "Mervin M Fanlser"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+Compare the significant differentially expressed genes to the differential LUI
+genes in the *Ho et al., 2018* dataset of 451Lu cells with B-Raf inhibitor
+resistance.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(cowplot)
+library(org.Hs.eg.db)
+```
+
+## Parameters
+```{r set_params}
+set.seed(20210818)
+```
+
+## Functions
+
+```{r methods}
+
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+df_dge <- read_csv("data/dge/Ho18_Supplemental_Table_S3.csv")
+
+df_dtu <- read_tsv("data/dtu/20211021-451lu-twosample-lui.min50.boot10k.tsv.gz") %>%
+  mutate(ensembl_id=str_extract(gene, "^[^.]+"))
+```
+
+## Preprocessing
+```{r prepare_data}
+df_dtu_filtered <- mapIds(org.Hs.eg.db, df_dtu$ensembl_id, "SYMBOL", "ENSEMBL") %>%
+  enframe(name="ensembl_id", value="gene_symbol") %>%
+  full_join(df_dtu, by="ensembl_id") %>%
+  filter(qval < 0.05, abs(stat) > 0.15)
+
+df_dge_filtered <- df_dge %>% 
+  filter(padj < 0.05, abs(log2FoldChange) >= 1)
+```
+
+# Analysis
+
+## Common Genes
+
+```{r intersect_genes, fig.width=5, fig.height=4}
+intersect(df_dtu_filtered$gene_symbol, df_dge_filtered$Gene)
+```
+
+
+# Conclusion
+
+It appears there is almost no overlap, however, it is unclear if this gene list 
+from the SAKE paper is pre-filtered in some way. 
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

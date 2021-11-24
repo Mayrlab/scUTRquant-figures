@@ -1,0 +1,159 @@
+---
+title: "Compare CellRanger vs scUTRquant HVGs"
+author: "Mervin Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+<!--
+Explain why this document exists. 
+What are you trying to figure out?
+What are your expectations prior to the analysis?
+-->
+This document compares the sets of highest-variance genes across CellRanger and 
+scUTRquant gene UMI counts. Currently, the clusters are not in perfect agreement
+and so this is being examined in order to determine if the sets of genes being selected
+are playing a significant role.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(HDF5Array)
+library(SingleCellExperiment)
+library(scran)
+```
+
+## Parameters
+```{r set_params}
+set.seed(20210818)
+BiocParallel::register(BiocParallel::MulticoreParam(12))
+```
+
+## Functions
+
+```{r methods}
+get_pc_df <- function (sce_x, sce_y, pc="PC1",
+                        label_x="CellRanger", label_y="scUTRquant") {
+  df_rot_x <- reducedDim(sce_x, "PCA") %>% 
+    attr("rotation") %>% `[`(,pc) %>% 
+    enframe("gene", label_x)
+  df_rot_y <- reducedDim(sce_y, "PCA") %>% 
+    attr("rotation") %>% `[`(,pc) %>% 
+    enframe("gene", label_y)
+  full_join(df_rot_x, df_rot_y, by="gene") %>% 
+    mutate(across(where(is.numeric), coalesce, 0))
+}
+
+plot_weights_compare <- function (df) {
+  max_abs_val <- max(abs(as.matrix(df[,-1])))
+  ggplot(df, aes(x=CellRanger, y=scUTRquant)) +
+    geom_abline(slope=c(1,-1), 
+                intercept=c(0,0), linetype='dashed') +
+    geom_abline(slope=c(1,1,-1,-1), 
+                intercept=c(-0.05, 0.05, -0.05, 0.05), 
+                linetype='dashed', color='lightgrey') +
+    geom_point(size=1, alpha=0.8, pch=16) +
+    coord_cartesian(xlim=c(-max_abs_val, max_abs_val),
+                    ylim=c(-max_abs_val, max_abs_val)) +
+    theme_bw()
+}
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+df_counts_all <- readRDS("data/sce/processed/df_counts.all_genes.pca.Rds")
+```
+
+## Preprocessing
+### Extract PC Dataframes
+```{r prepare_data, message=FALSE}
+df_pcs <- df_counts_all %>%
+  transmute(sample_id, 
+            PC1=map2(sce_10x, sce_sq, get_pc_df, pc="PC1"),
+            PC2=map2(sce_10x, sce_sq, get_pc_df, pc="PC2"))
+```
+
+# Analysis
+## Plot PC1 Weights
+
+```{r plot_pc1, fig.width=4, fig.height=4}
+df_pcs %>%
+  transmute(sample_id, g=map(PC1, plot_weights_compare)) %>%
+  deframe() %>% {
+    for (id in names(.)) {
+      ## print locally in this document
+      print(.[[id]] + ggtitle(id))
+      
+      ## save to PDFs
+      # ggsave(sprintf("output/supplement/sup2-pca-compare-%s.pdf", id), 
+      #        .[[id]], width=5, height=4, dpi=300)
+    }
+  }
+```
+
+### List Genes
+```{r list_p1_genes}
+df_pcs %>%
+  transmute(sample_id, g=map(PC1, function (df) {
+    df %>%
+      #filter(CellRanger == 0 | scUTRquant == 0 | abs(CellRanger - scUTRquant) > 0.05) %>%
+      filter(abs(CellRanger - scUTRquant) > 0.1) %>%
+      pull(gene)
+  }))
+```
+
+## Plot PC2 Weights
+
+```{r plot_pc2, fig.width=4, fig.height=4}
+df_pcs %>%
+  transmute(sample_id, g=map(PC2, plot_weights_compare)) %>%
+  deframe() %>% {
+    for (id in names(.)) {
+      ## print locally in this document
+      print(.[[id]] + ggtitle(id))
+      
+      ## save to PDFs
+      # ggsave(sprintf("output/supplement/sup2-pca-compare-%s.pdf", id), 
+      #        .[[id]], width=5, height=4, dpi=300)
+    }
+  }
+```
+
+# Conclusion
+
+There are major discrepancies in the PC weightings, especially in the neuronal data.
+We need to dig deeper into which genes have very large differences.
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash conda, comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

@@ -1,0 +1,240 @@
+---
+title: "Compare CellRanger vs scUTRquant Clustering - Multimapping, Full-Length"
+author: "Mervin Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    toc: true
+    toc_depth: 2
+---
+
+# Purpose 
+
+Here we compare clustering results using CellRanger versus scUTRquant derived counts
+from the 10X Chromium 3'-end demonstration data (v2 and v3). This is a diagnostic 
+run, not intended for publication or downstream analysis. We aim to understand what
+genes are most driving the differences observed in clustering.
+
+# Setup
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(SingleCellExperiment)
+library(DropletUtils)
+library(scran)
+library(scater)
+library(bluster)
+library(tidyverse)
+library(magrittr)
+library(cowplot)
+library(Matrix)
+```
+
+## Parameters
+```{r params}
+set.seed(20210723)
+BiocParallel::register(BiocParallel::MulticoreParam(12))
+SAMPLE_SHEET="metadata/counts_multimap_sample_sheet_fulllength.csv"
+
+N_HVGS=1000 # controls genes used for PCA
+N_PCS=20 # number of principal components to compute
+MIN_EFF_GENES=100 # requires cells to be diverse in gene
+MAX_RATIO=Inf # controls maximum ratio difference between gene counts
+```
+
+
+## Functions
+```{r functions, message=FALSE, warning=FALSE}
+## load multimapping table
+read_multimap_tsv <- function (file) {
+  read_tsv(file, skip=1, col_types='c__l_',
+           col_names=c("gene_id", "is_multimapping")) %>%
+    group_by(gene_id) %>%
+    summarize(has_multimapping=any(is_multimapping), .groups='drop')
+}
+
+## conform 10X cell ids to match scUTRquant cell_id
+conform_cell_ids <- function (sample_id, sce) {
+  colData(sce) %<>%
+    as_tibble %>%
+    mutate(bx=str_extract(Barcode, "^[ACGT]{16}"),
+           cell_id=str_c(sample_id, bx, sep='_')) %>%
+    select(cell_id, bx) %>%
+    set_rownames(.$cell_id) %>%
+    DataFrame()
+  sce
+}
+
+## conform to unversioned ENSEMBL gene_id
+conform_gene_ids <- function (sce) {
+  set_rownames(sce, str_extract(rownames(sce), "^ENSMUSG[0-9]+"))
+}
+
+intersect_cell_ids <- function (sce1, sce2) { 
+  intersect(colnames(sce1), colnames(sce2))
+}
+
+## computes the diversity of genes represented per cell
+## 2^(entropy)
+compute_effective_gene_count <- function (sce) {
+  cts <- counts(sce) %>% Matrix(sparse=TRUE)
+  pct <- (cts %*% Diagonal(ncol(cts), 1/colSums(cts)))
+  lpct <- pct
+  lpct@x <- log2(lpct@x)
+  2^(-colSums(pct*lpct))
+}
+
+filter_cells <- function (sce, idx) { sce[,idx] }
+
+## exclude cells with low diversity
+## this often includes both high MT and high Hb(a|b) genes
+filter_low_diversity_cells <- function (sce, min_eff_genes=MIN_EFF_GENES) {
+  n_eff_genes <- compute_effective_gene_count(sce)
+  sce[, n_eff_genes >= min_eff_genes]
+}
+
+## attach multimapping genes
+attach_multimapping <- function (sce, df) {
+  rowData(sce) %<>%
+    as_tibble(rownames="gene_id") %>%
+    left_join(df, by="gene_id") %>%
+    set_rownames(.$gene_id) %>%
+    DataFrame()
+  sce
+}
+
+## identify genes that are consistent across datasets
+get_consistent_genes <- function (sce_sq, sce_cr) { #}, max_ratio=MAX_RATIO) {
+  idx <- intersect(rownames(sce_sq), rownames(sce_cr))
+  genes_multimapping <- rowData(sce_sq) %>%
+    as_tibble(rownames='rownames') %>%
+    filter(has_multimapping) %>%
+    pull(rownames)
+  setdiff(idx, genes_multimapping)
+  # tibble(gene=idx,
+  #        cts1=rowSums(counts(sce_sq[idx,])),
+  #        cts2=rowSums(counts(sce_cr[idx,]))) %>%
+  #   filter(cts1 > 0, cts2 > 0) %>% # exclude undetected genes
+  #   filter(cts1/cts2 < max_ratio, cts2/cts1 < max_ratio) %>%
+  #   pull(gene)
+}
+  
+filter_features <- function (sce, idx) { sce[idx,] }
+
+## adds PCA to SCE object
+add_pca <- function (sce) {
+  ## avoid stupid dimnames issue (https://github.com/Bioconductor/SummarizedExperiment/issues/51)
+  names(dimnames(counts(sce))) <- NULL
+  
+  tmp_clusters <- quickCluster(sce)
+  sce <- computeSumFactors(sce, clusters=tmp_clusters)
+  sce <- logNormCounts(sce)
+  dec <- modelGeneVar(sce)
+  hvgs <- getTopHVGs(dec, n=N_HVGS)
+  runPCA(sce, ncomponents=N_PCS, subset_row=hvgs)
+}
+```
+
+# Load and Preprocess Data
+```{r load_data, message=FALSE, warning=FALSE}
+df_counts <- read_csv(SAMPLE_SHEET) %>%
+  ## read data files
+  mutate(sce_sq=map(file_scutrquant, readRDS),
+         sce_10x=map(file_cellranger, read10xCounts),
+         tbl_multimap=map(file_multimap, read_multimap_tsv)) %>%
+  
+  ## adjust cell_ids
+  mutate(sce_10x=map2(sample_id, sce_10x, conform_cell_ids)) %>%
+  
+  ## filter low-diversity cells
+  mutate(sce_sq=map(sce_sq, filter_low_diversity_cells),
+         sce_10x=map(sce_10x, filter_low_diversity_cells)) %>%
+  
+  ## filter to common cells
+  mutate(idx_cells=map2(sce_sq, sce_10x, intersect_cell_ids)) %>%
+  mutate(sce_sq=map2(sce_sq, idx_cells, filter_cells),
+         sce_10x=map2(sce_10x, idx_cells, filter_cells)) %>%
+  
+  ## attach multimapping genes
+  mutate(sce_sq=map2(sce_sq, tbl_multimap, attach_multimapping)) %>%
+  
+  ## conform gene_ids
+  mutate(sce_sq=map(sce_sq, conform_gene_ids)) %>%
+  
+  ## get consistent genes
+  mutate(idx_genes=map2(sce_sq, sce_10x, get_consistent_genes))
+```
+
+# Analysis
+## Plot Gene Counts
+```{r plot_gene_counts, fig.width=5, fig.height=4}
+plot_umis_per_gene_compare <- function (sce_x, sce_y, idx,
+                                        label_x="CellRanger UMI Counts Per Cell",
+                                        label_y="scUTRquant UMI Counts Per Cell") {
+  idx_common <- intersect(rownames(sce_x), rownames(sce_y))
+  df <- tibble(x=rowSums(counts(sce_x[idx_common,])),
+               y=rowSums(counts(sce_y[idx_common,])),
+               is_consistent=idx_common %in% idx)
+  
+  ggplot(df, aes(x=x+1, y=y+1, color=is_consistent)) +
+    geom_point(alpha=0.3, size=0.1, pch=16) +
+    geom_abline(slope=1, intercept=0, linetype='dashed') +
+    scale_x_log10() + scale_y_log10() +
+    scale_color_manual(values=c('red', 'black')) +
+    labs(x=label_x, y=label_y) +
+    guides(color=FALSE) +
+    theme_minimal_grid()
+}
+
+df_counts %>%
+  transmute(sample_id, g=pmap(list(sce_x=sce_10x, sce_y=sce_sq, idx=idx_genes), plot_umis_per_gene_compare)) %>%
+  deframe() %>% { 
+    for (id in names(.)) { 
+      ## print locally in this document
+      print(.[[id]] + ggtitle(id))
+      
+      ## save to PDFs
+      # ggsave(sprintf("output/fig1B-umis-per-cell-compare-%s.pdf", id), 
+      #        .[[id]], width=5, height=4, dpi=300)
+    }
+  }
+```
+
+## Filter Genes and Compute PCA
+```{r filter_pca}
+df_counts %<>%
+  mutate(sce_sq=map2(sce_sq, idx_genes, filter_features),
+         sce_10x=map2(sce_10x, idx_genes, filter_features)) %>%
+
+  ## add PCA to SCEs
+  mutate(sce_sq=map(sce_sq, add_pca),
+         sce_10x=map(sce_10x, add_pca))
+```
+
+# Clustering
+## Louvain
+```{r compute_louvain_clusters}
+cluster_louvain <- function (sce) {
+  clusterRows(reducedDim(sce, "PCA"), NNGraphParam(cluster.fun="louvain"))
+}
+
+df_counts %>%
+  ## cluster
+  mutate(clusters_sq=map(sce_sq, cluster_louvain),
+         clusters_10x=map(sce_10x, cluster_louvain)) %>%
+  
+  ## compute adjusted Rand index
+  transmute(sample_id, n_cells=map_int(idx_cells, length), 
+            ari=map2_dbl(clusters_sq, clusters_10x, aricode::ARI),
+            nmi=map2_dbl(clusters_sq, clusters_10x, aricode::NMI),
+            nvi=map2_dbl(clusters_sq, clusters_10x, aricode::NVI)) %>%
+  
+  knitr::kable()
+```
+
+
+---
+
+# Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```

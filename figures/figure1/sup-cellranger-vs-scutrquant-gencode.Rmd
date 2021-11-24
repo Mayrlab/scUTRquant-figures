@@ -1,0 +1,294 @@
+---
+title: "Compare CellRanger vs scUTRquant Counts - GENCODE"
+author: "Mervin Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    toc: true
+    toc_depth: 2
+---
+
+# Purpose 
+
+Here we compare the count results of CellRanger versus scUTRquant using the 10X
+Chromium 3'-end demonstration data (v2 and v3). This gauges consistency with gene-level
+count pipelines, indicating the appropriateness for substituting scUTRquant for 
+alternative scRNA-seq quantification tools.
+
+# Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(SingleCellExperiment)
+library(DropletUtils)
+library(tidyverse)
+library(ggbeeswarm)
+library(magrittr)
+library(cowplot)
+library(Matrix)
+```
+
+
+# Data
+```{r load_data, message=FALSE, warning=FALSE}
+SAMPLE_SHEET="metadata/counts_sample_sheet_gencode.csv"
+
+## conform 10X cell ids to match scUTRquant cell_id
+conform_cell_ids <- function (sample_id, sce) {
+  colData(sce) %<>%
+    as_tibble %>%
+    mutate(bx=str_extract(Barcode, "^[ACGT]{16}"),
+           cell_id=str_c(sample_id, bx, sep='_')) %>%
+    select(cell_id, bx) %>%
+    set_rownames(.$cell_id) %>%
+    DataFrame()
+  sce
+}
+
+## conform to unversioned ENSEMBL gene_id
+conform_gene_ids <- function (sce) {
+  set_rownames(sce, str_extract(rownames(sce), "^ENSMUSG[0-9]+"))
+}
+  
+df_counts <- read_csv(SAMPLE_SHEET) %>%
+  ## read SCE files
+  mutate(sce_sq=map(file_scutrquant, readRDS),
+         sce_10x=map(file_cellranger, read10xCounts)) %>%
+  
+  ## adjust cell_ids
+  mutate(sce_10x=map2(sample_id, sce_10x, conform_cell_ids)) %>%
+  
+  ## summarize to gene counts
+  mutate(sce_sq=map(sce_sq, conform_gene_ids))
+```
+
+# UMI Counts Per Cell
+## Compute Correlations
+```{r compute_corrs_cells}
+compute_cell_correlation <- function (sce1, sce2, method="pearson") {
+  idx_cells <- intersect(colnames(sce1), colnames(sce2))
+  cts1 <- log10(colSums(counts(sce1[,idx_cells])))
+  cts2 <- log10(colSums(counts(sce2[,idx_cells])))
+  cor(cts1, cts2, method=method)
+}
+
+df_cells_prho <- df_counts %>%
+  transmute(sample_id, rho=map2_dbl(sce_sq, sce_10x, compute_cell_correlation, method='pearson')) %T>%
+  knitr::kable()
+
+df_cells_srho <- df_counts %>%
+  transmute(sample_id, rho=map2_dbl(sce_sq, sce_10x, compute_cell_correlation, method='spearman')) %T>%
+  knitr::kable()
+```
+
+
+## Plots
+### Correlations
+```{r plot_corrs_cells, fig.width=2, fig.height=4}
+n_lab <- sprintf("n = %d", nrow(df_cells_prho))
+
+df_cells_prho %>%
+  ggplot(aes(x=n_lab, y=rho)) +
+  stat_summary(fun='mean', geom='bar', width=0.4, fill='lightgrey', color='black') +
+  stat_summary(fun.data=mean_se, geom='errorbar', width=0.3) +
+  geom_quasirandom(width=0.1, size=1) +
+  scale_y_continuous(limits=c(0,1), expand=expansion(add=c(0,0))) +
+  labs(x=NULL, y="Cell UMI Counts Pearson Correlation") +
+  theme_bw()
+
+#ggsave("output/fig1B-umi-corrs-pearson-inset.pdf", width=2, height=4, dpi=300)
+
+df_cells_prho %>% 
+  ggplot(aes(x=n_lab, y=rho)) +
+  stat_summary(fun='mean', geom='bar', width=0.4, fill='lightgrey', color='black') +
+  stat_summary(fun.data=mean_se, geom='errorbar', width=0.3) +
+  geom_quasirandom(width=0.1, size=1) +
+  scale_y_continuous(limits=c(0,1), expand=expansion(add=c(0,0))) +
+  coord_cartesian(ylim=c(0.9,1)) +
+  labs(x=NULL, y="Cell UMI Counts Pearson Correlation") +
+  theme_bw()
+
+#ggsave("output/fig1B-umi-corrs-pearson-inset-zoom.pdf", width=2, height=4, dpi=300)
+
+df_cells_srho %>%
+  ggplot(aes(x=n_lab, y=rho)) +
+  stat_summary(fun='mean', geom='bar', width=0.4, fill='lightgrey', color='black') +
+  stat_summary(fun.data=mean_se, geom='errorbar', width=0.3) +
+  geom_quasirandom(width=0.1, size=1) +
+  scale_y_continuous(limits=c(0,1), expand=expansion(add=c(0,0))) +
+  labs(x=NULL, y="Cell UMI Counts Spearman Correlation") +
+  theme_bw()
+
+#ggsave("output/fig1B-umi-corrs-spearman-inset.pdf", width=2, height=4, dpi=300)
+
+df_cells_srho %>%
+  ggplot(aes(x=n_lab, y=rho)) +
+  stat_summary(fun='mean', geom='bar', width=0.4, fill='lightgrey', color='black') +
+  stat_summary(fun.data=mean_se, geom='errorbar', width=0.3) +
+  geom_quasirandom(width=0.1, size=1) +
+  scale_y_continuous(limits=c(0,1), expand=expansion(add=c(0,0))) +
+  coord_cartesian(ylim=c(0.9,1)) +
+  labs(x=NULL, y="Cell UMI Counts Spearman Correlation") +
+  theme_bw()
+
+#ggsave("output/fig1B-umi-corrs-spearman-inset-zoom.pdf", width=2, height=4, dpi=300)
+```
+
+### Dots
+```{r plot_dots_cells, fig.width=5, fig.height=4}
+plot_umis_per_cell_compare <- function (sce_x, sce_y, 
+                                        label_x="CellRanger UMI Counts Per Cell",
+                                        label_y="scUTRquant UMI Counts Per Cell") {
+  idx_cells <- intersect(colnames(sce_x), colnames(sce_y))
+  df <- tibble(x=colSums(counts(sce_x[,idx_cells])),
+               y=colSums(counts(sce_y[,idx_cells])))
+  alpha <- if (nrow(df) > 5000) 0.3 else 0.5
+  ggplot(df, aes(x=x, y=y)) +
+    geom_point(alpha=alpha, size=0.3, pch=16) +
+    geom_abline(slope=1, intercept=0, linetype='dashed') +
+    scale_x_log10() + scale_y_log10() +
+    labs(x=label_x, y=label_y) +
+    theme_minimal_grid()
+}
+
+df_counts %>%
+  transmute(sample_id, g=map2(sce_10x, sce_sq, plot_umis_per_cell_compare)) %>%
+  deframe() %>% { 
+    for (id in names(.)) { 
+      ## print locally in this document
+      print(.[[id]] + ggtitle(id))
+      
+      ## save to PDFs
+      # ggsave(sprintf("output/fig1B-umis-per-cell-compare-%s.pdf", id), 
+      #        .[[id]], width=5, height=4, dpi=300)
+    }
+  }
+  
+```
+
+# UMI Counts Per Gene
+## Compute Correlations
+```{r compute_corrs_genes}
+compute_gene_correlation <- function (sce1, sce2, method="pearson") {
+  idx_genes <- intersect(rownames(sce1), rownames(sce2))
+  idx_cells <- intersect(colnames(sce1), colnames(sce2))
+  cts1 <- log10(1+rowSums(counts(sce1[idx_genes,idx_cells])))
+  cts2 <- log10(1+rowSums(counts(sce2[idx_genes,idx_cells])))
+  cor(cts1, cts2, method=method)
+}
+
+df_genes_prho <- df_counts %>%
+  transmute(sample_id, rho=map2_dbl(sce_sq, sce_10x, compute_gene_correlation, method='pearson')) %T>%
+  { print(knitr::kable(.)) }
+
+df_genes_srho <- df_counts %>%
+  transmute(sample_id, rho=map2_dbl(sce_sq, sce_10x, compute_gene_correlation, method='spearman')) %T>%
+  { print(knitr::kable(.)) }
+```
+
+
+## Plots
+### Correlations
+```{r plot_corrs_genes, fig.width=2, fig.height=4}
+n_lab <- sprintf("n = %d", nrow(df_genes_prho))
+
+df_genes_prho %>%
+  ggplot(aes(x=n_lab, y=rho)) +
+  stat_summary(fun='mean', geom='bar', width=0.4, fill='lightgrey', color='black') +
+  stat_summary(fun.data=mean_se, geom='errorbar', width=0.3) +
+  geom_quasirandom(width=0.1, size=1) +
+  scale_y_continuous(limits=c(0,1), expand=expansion(add=c(0,0))) +
+  labs(x=NULL, y="Gene UMI Counts Pearson Correlation") +
+  theme_bw()
+
+#ggsave("output/fig1C-umi-corrs-pearson-inset.pdf", width=2, height=4, dpi=300)
+
+df_genes_prho %>% 
+  ggplot(aes(x=n_lab, y=rho)) +
+  stat_summary(fun='mean', geom='bar', width=0.4, fill='lightgrey', color='black') +
+  stat_summary(fun.data=mean_se, geom='errorbar', width=0.3) +
+  geom_quasirandom(width=0.1, size=1) +
+  scale_y_continuous(limits=c(0,1), expand=expansion(add=c(0,0))) +
+  coord_cartesian(ylim=c(0.9,1)) +
+  labs(x=NULL, y="Gene UMI Counts Pearson Correlation") +
+  theme_bw()
+
+#ggsave("output/fig1C-umi-corrs-pearson-inset-zoom.pdf", width=2, height=4, dpi=300)
+
+df_genes_srho %>%
+  ggplot(aes(x=n_lab, y=rho)) +
+  stat_summary(fun='mean', geom='bar', width=0.4, fill='lightgrey', color='black') +
+  stat_summary(fun.data=mean_se, geom='errorbar', width=0.3) +
+  geom_quasirandom(width=0.1, size=1) +
+  scale_y_continuous(limits=c(0,1), expand=expansion(add=c(0,0))) +
+  labs(x=NULL, y="Gene UMI Counts Spearman Correlation") +
+  theme_bw()
+
+#ggsave("output/fig1C-umi-corrs-spearman-inset.pdf", width=2, height=4, dpi=300)
+
+df_genes_srho %>%
+  ggplot(aes(x=n_lab, y=rho)) +
+  stat_summary(fun='mean', geom='bar', width=0.4, fill='lightgrey', color='black') +
+  stat_summary(fun.data=mean_se, geom='errorbar', width=0.3) +
+  geom_quasirandom(width=0.1, size=1) +
+  scale_y_continuous(limits=c(0,1), expand=expansion(add=c(0,0))) +
+  coord_cartesian(ylim=c(0.9,1)) +
+  labs(x=NULL, y="Gene UMI Counts Spearman Correlation") +
+  theme_bw()
+
+#ggsave("output/fig1C-umi-corrs-spearman-inset-zoom.pdf", width=2, height=4, dpi=300)
+```
+
+### Dots
+```{r plot_dots_genes, fig.width=5, fig.height=4}
+plot_umis_per_gene_compare <- function (sce_x, sce_y, 
+                                        label_x="CellRanger UMI Counts Per Gene",
+                                        label_y="scUTRquant UMI Counts Per Gene") {
+  idx_genes <- intersect(rownames(sce_x), rownames(sce_y))
+  idx_cells <- intersect(colnames(sce_x), colnames(sce_y))
+  df <- tibble(x=rowSums(counts(sce_x[idx_genes,idx_cells])),
+               y=rowSums(counts(sce_y[idx_genes,idx_cells])))
+  ggplot(df, aes(x=x+1, y=y+1)) +
+    geom_point(alpha=0.3, size=0.1, pch=16) +
+    geom_abline(slope=1, intercept=0, linetype='dashed') +
+    scale_x_log10() + scale_y_log10() +
+    labs(x=label_x, y=label_y) +
+    theme_minimal_grid()
+}
+
+df_counts %>%
+  transmute(sample_id, g=map2(sce_10x, sce_sq, plot_umis_per_gene_compare)) %>%
+  deframe() %>% { 
+    for (id in names(.)) { 
+      ## print locally in this document
+      print(.[[id]] + ggtitle(id))
+      
+      ## save to PDFs
+      # ggsave(sprintf("output/fig1C-umis-per-gene-compare-%s.pdf", id), 
+      #        .[[id]], width=5, height=4, dpi=300)
+    }
+  }
+  
+```
+
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash conda, comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

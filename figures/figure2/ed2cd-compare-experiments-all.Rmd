@@ -1,0 +1,329 @@
+---
+title: "Compare Transcript TPMs - All Experiments"
+author: "Mervin Fansler"
+date: '`r format(Sys.time(), "%d %B %Y")`'
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Overview
+Here we compare mESCs from four datasets:
+
+ - Lackford et al., 2014 ([article](https://doi.org/10.1002/embj.201386537) | [data](https://www.ncbi.nlm.nih.gov/sra/SRX304982))
+ - Nam et al., 2014 ([article](https://doi.org/10.1016/j.molcel.2014.02.013) | [data](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSM1268958))
+ - Guo et al., 2019 ([article](https://doi.org/10.1016/j.molcel.2019.01.042) | [data](https://www.ncbi.nlm.nih.gov/sra/SRX5437425))
+ - Bleckwehl et al., 2021 ([preprint](https://www.biorxiv.org/content/10.1101/2020.07.07.192427v2) | [data](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSM4694997))
+
+## Data Description
+### Cell Cultures
+The Lackford data is based on **E14Tg2a** cells ([129/Ola strain](http://www.informatics.jax.org/strain/MGI:2160930)) cultured in [ESGRO Complete PLUS Clonal Grade Medium (Millipore)](https://www.emdmillipore.com/US/en/product/ESGRO-Complete-PLUS-Clonal-Grade-Medium-500ml,MM_NF-SF001-500P), which uses a specific (but proprietary) GSK3β inhibitor and a serum-free condition that does not require LIF.
+
+The Nam data lists [**129S5/SvEvBrd**](http://www.informatics.jax.org/strain/MGI:3487126) as the strain. Culture conditions are not specified in article, supplement, GEO, or SRA.
+
+The Guo data is based on OG2 transgenic mouse embryonic stem cells, with a strain background of 1/2 129SVJ+3/8 C57B6+1/8 CBA. Cells were cultured on feeder layers with 2iL medium (high glucose DMEM, 15%FBS, NEAA, GlutaMAX, LIF) plus 2i (1 mm PD0325901, 3 mm CHIR99021) and LIF.
+
+The Bleckwehl data is based on **E14Tg2a** cells ([129/Ola strain](http://www.informatics.jax.org/strain/MGI:2160930)) cultured in 2i+LIF conditions (serum-free N2B27 medium supplemented with MEK inhibitor PD0325901 [0.4 μM, Miltenyi Biotec], GSK3β inhibitor CHIR99021 [3 μM, Amsbio], and LIF).
+
+### Library Preparation and Sequencing
+Lackford used [a direct RNA sequencing protocol](https://dx.doi.org/10.1007%2F978-1-61779-089-8_4) performed by Helicos BioSciences.
+
+Nam used [a 3P-Seq protocol](http://bartellab.wi.mit.edu/protocols/3PSeqV2.pdf) based on [Jan et al., 2011](https://doi.org/10.1038/nature09616), that uses 16-20 amplification cycles.
+
+Bleckwehl and Guo used a 10X Chromium 3' sequencing kit (v2 chemistry).
+
+### Quantification
+Lackford and Nam quantifications come from [PolyASite v2](https://polyasite.unibas.ch/samples) ([pipeline](https://github.com/zavolanlab/polyAsite_workflow)).
+
+Bleckwehl and Guo are quantified through the `scutr-quant` pipeline.
+
+```{r libs, echo=FALSE, message=FALSE, warning=FALSE}
+library(rtracklayer)
+library(plyranges)
+library(SingleCellExperiment)
+library(BSgenome)
+library(Matrix)
+library(magrittr)
+library(tidyverse)
+library(ggbeeswarm)
+library(cowplot)
+```
+
+## Parameters
+```{r parameters}
+theme_set(theme_bw())
+```
+
+# Methods
+```{r methods}
+## Loading PolyASite BED files
+mm10_seqinfo <- seqinfo(getBSgenome("mm10")) %>% keepStandardChromosomes
+
+extra_cols_polyasite <- c(pct_samples="numeric", n_protocols="integer",
+                          mean_tpm="numeric", region="factor", pas="character")
+
+import_polyasite <- function(...) {
+  import(..., format="BED", extraCols=extra_cols_polyasite) %>% 
+    mutate(tpm=score) %>%
+    select(name, tpm, 3:7) %>%
+    `seqlevelsStyle<-`("UCSC") %>%
+    `seqlevels<-`(value=seqlevels(mm10_seqinfo), pruning.mode='coarse') %>%
+    `seqinfo<-`(value=mm10_seqinfo)
+}
+
+compute_column_corrs <- function (df, method="spearman", use="complete.obs") {
+  df %>%
+    as.matrix %>% cor(method=method, use=use) %>% 
+    `[<-`(lower.tri(.,TRUE), NA) %>%
+    as_tibble(rownames="sample1") %>% 
+    pivot_longer(cols=-1, names_to="sample2", values_to="rho", values_drop_na=TRUE)
+}
+
+plot_corrs <- function (df, ylab="Spearman Correlation") {
+  ggplot(df, aes(x=type, y=rho, fill=type)) +
+    stat_summary(fun='mean', geom='bar', width=0.6, color='black') + 
+    stat_summary(fun.data=mean_sdl, geom='errorbar', width=0.4) +
+    geom_quasirandom(width=0.2, size=0.5) +
+    geom_text(aes(x=type, label=str_c("N=", after_stat(count)), y=NULL), 
+              stat="count", y=0.03, size=3) +
+    scale_y_continuous(limits=c(0,1), expand=expansion(add=c(0,0))) +
+    labs(x=NULL, y=ylab) +
+    guides(fill=FALSE)
+}
+```
+
+# Load Data
+```{r load_data}
+bleckwehl_samples=c("2i_ESC"="Bleckwehl21", "d2_EB"="Bleckwehl21_EB2", "d4_EB"="Bleckwehl21_EB4")
+
+gr_nam <- import_polyasite("data/bed/polyasite/nam14/mESC_WT.bed.gz")
+gr_lackford <- import_polyasite("data/bed/polyasite/lackford14/mESC_WT.bed.gz")
+
+sce_bleckwehl <- readRDS("data/sce/01_filtered.rada-iglesias20.utrome.txs.Rds") %>%
+  `[`(, .$sample %in% names(bleckwehl_samples))
+
+sce_guo <- readRDS("data/sce/01_filtered.guo19.utrome.txs.Rds")
+```
+
+## Merge Single Cell
+```{r merge_sces}
+colData(sce_bleckwehl) %<>% 
+  as_tibble(rownames='cell_id') %>%
+  mutate(sample_id=bleckwehl_samples[sample]) %>%
+  select(cell_id, sample_id) %>%
+  column_to_rownames("cell_id") %>%
+  DataFrame()
+
+colData(sce_guo) %<>%
+  as_tibble %>%
+  mutate(sample_id="Guo19") %>%
+  select(cell_id, sample_id) %>%
+  column_to_rownames("cell_id") %>%
+  DataFrame()
+
+sce <- cbind(sce_guo, sce_bleckwehl)
+```
+
+
+## Filter Data
+```{r filter_data}
+# Filter to top two non-overlapping UTRs
+df_utr2 <- rowData(sce) %>%
+  as_tibble %>%
+  select(transcript_id, gene_id, gene_symbol, is_ipa, atlas.utr_type, is_blacklisted) %>%
+  mutate(total_umis=rowSums(counts(sce)),
+         tpm=total_umis*1e6/sum(total_umis, na.rm=TRUE)) %>%
+  #filter(!is_ipa, total_umis > 0) %>%
+  filter(!is_ipa, atlas.utr_type == 'multi', !is_blacklisted) %>%
+  group_by(gene_id) %>%
+  filter(dplyr::n() > 1) %>%
+  mutate(utr_rank=row_number(-total_umis)) %>%
+  ungroup() %>%
+  filter(utr_rank %in% 1:2)
+
+idx_utr2 <- rowRanges(sce)[df_utr2$transcript_id,] %>%
+  join_overlap_self_directed() %>%
+  filter(transcript_id != transcript_id.overlap) %>%
+  { filter(df_utr2, !(transcript_id %in% .$transcript_id)) } %>%
+  group_by(gene_id) %>%
+  filter(dplyr::n() == 2) %>%
+  ungroup() %$%
+  transcript_id
+```
+
+# TPM 
+## Compute Bulk
+```{r compute_bulk_tpm}
+df_nam <- gr_nam %>%
+  anchor_center() %>%
+  mutate(width=50) %>% 
+  join_overlap_intersect_directed(x=rowRanges(sce)[idx_utr2,]) %>%
+  group_by(transcript_id) %>%
+  summarise(tpm=sum(tpm, na.rm=TRUE)) %>%
+  as_tibble() %>%
+  rename(Nam14=tpm)
+
+df_lackford <- gr_lackford %>%
+  anchor_center() %>%
+  mutate(width=50) %>% 
+  join_overlap_intersect_directed(x=rowRanges(sce)[idx_utr2,]) %>%
+  group_by(transcript_id) %>%
+  summarise(tpm=sum(tpm, na.rm=TRUE)) %>%
+  as_tibble() %>%
+  rename(Lackford14=tpm)
+```
+
+## Compute Single-Cell
+```{r compute_sc_tpm}
+M_samples <- fac2sparse(sce$sample_id) %>% t
+
+cts <- assay(sce, 'normcounts') %*% M_samples
+
+df_sc <- (cts %*% Diagonal(ncol(cts), 1e6/colSums(cts))) %>% 
+  `[`(idx_utr2, , drop=FALSE) %>% 
+  as.matrix %>% 
+  as_tibble(rownames='transcript_id')
+```
+
+## Merge Data
+```{r combine_tpm}
+df_tpm <- df_sc %>%
+  left_join(df_nam, by='transcript_id') %>%
+  left_join(df_lackford, by='transcript_id') %>%
+  mutate(across(where(is.numeric), coalesce, 0)) %>%
+  left_join(select(df_utr2, transcript_id, gene_id, total_umis, utr_rank), 
+            by='transcript_id') %>%
+  select(transcript_id, gene_id, utr_rank, total_umis, everything())
+
+N_SAMPLES=ncol(df_tpm) - 5
+SAMPLES_BULK=c("Lackford14", "Nam14")
+SAMPLES_SC=c("Guo19", "Bleckwehl21")
+SAMPLE_COLS=c(SAMPLES_BULK, SAMPLES_SC)
+#SAMPLE_COLS=c("Nam14", "Lackford14", "Guo19", "Bleckwehl21", "Bleckwehl21_EB2", "Bleckwehl21_EB4")
+MIN_TPM=0
+
+df_tpm_min <- df_tpm %>%
+  pivot_longer(all_of(SAMPLE_COLS), names_to="sample", values_to="tpm") %>%
+  group_by(transcript_id) %>%
+  filter(all(tpm > MIN_TPM)) %>%
+  ungroup() %>%
+  pivot_wider(names_from='sample', values_from='tpm') %>%
+  group_by(gene_id) %>%
+  filter(dplyr::n() == 2) %>%
+  ungroup()
+```
+
+# Combined Figures
+## TPM
+### All genes
+```{r plot_all_tpm, fig.width=3, fig.height=4, warning=FALSE}
+df_tpm_corrs <- df_tpm[,SAMPLE_COLS] %>%
+  compute_column_corrs() %>%
+  mutate(type=str_c(ifelse(sample1 %in% SAMPLES_SC, "sc", "bulk"),
+               ifelse(sample2 %in% SAMPLES_SC, "sc", "bulk"),
+               sep="-"))
+
+plot_corrs(df_tpm_corrs, ylab="Inter-Experiment TPM Spearman Correlation")
+
+ggsave("output/figure2/ed2c-mescs-tpm-corrs-bars.pdf", width=3, height=4, dpi=300)
+```
+
+### Two-UTR Genes
+```{r plot_all_tpm_twoutr, fig.width=3, fig.height=4, warning=FALSE}
+df_tpm_twoutr_corrs <- df_tpm_min[,SAMPLE_COLS] %>%
+  compute_column_corrs() %>%
+  mutate(type=str_c(ifelse(sample1 %in% SAMPLES_SC, "sc", "bulk"),
+               ifelse(sample2 %in% SAMPLES_SC, "sc", "bulk"),
+               sep="-"))
+
+plot_corrs(df_tpm_twoutr_corrs, ylab="Inter-Experiment TPM Spearman Correlation")
+
+ggsave("output/figure2/ed2c-mescs-tpm-twoutr-corrs-bars.pdf", width=3, height=4, dpi=300)
+```
+
+## LUI
+### Compute
+```{r compute_lui}
+df_lui <- df_tpm %>% 
+  pivot_longer(all_of(SAMPLE_COLS), names_to='sample', values_to="tpm") %>%
+  group_by(gene_id, sample) %>%
+  mutate(lui=tpm/sum(tpm, na.rm=TRUE),
+         utr_pos=row_number(as.integer(str_extract(transcript_id,
+                                                   "[^.]+$")))) %>%
+  filter(utr_pos == max(utr_pos)) %>% 
+  ungroup() %>%
+  select(gene_id, sample, lui) %>%
+  pivot_wider(names_from='sample', values_from='lui')
+
+df_lui_min <- df_tpm_min %>% 
+  pivot_longer(all_of(SAMPLE_COLS), names_to='sample', values_to="tpm") %>%
+  group_by(gene_id, sample) %>%
+  mutate(lui=tpm/sum(tpm, na.rm=TRUE),
+         utr_pos=row_number(as.integer(str_extract(transcript_id,
+                                                   "[^.]+$")))) %>%
+  filter(utr_pos == max(utr_pos)) %>% 
+  ungroup() %>%
+  select(gene_id, sample, lui) %>%
+  pivot_wider(names_from='sample', values_from='lui')
+
+SAMPLE_COLS_LUI=seq(2, ncol(df_lui))
+```
+
+### Plot All Multi-UTR
+```{r plot_all_lui, fig.width=3, fig.height=4, warning=FALSE}
+df_lui_corrs <- df_lui[,SAMPLE_COLS_LUI] %>%
+  compute_column_corrs() %>%
+  mutate(type=str_c(ifelse(sample1 %in% SAMPLES_SC, "sc", "bulk"),
+               ifelse(sample2 %in% SAMPLES_SC, "sc", "bulk"),
+               sep="-"))
+
+plot_corrs(df_lui_corrs, ylab="Inter-Experiment LUI Spearman Correlation")
+
+ggsave("output/figure2/ed2d-mescs-lui-corrs-bars.pdf", width=3, height=4, dpi=300)
+```
+
+### Plot Two-UTR
+```{r plot_all_lui_twoutr, fig.width=3, fig.height=4, warning=FALSE}
+df_lui_twoutr_corrs <- df_lui_min[,SAMPLE_COLS_LUI] %>%
+  compute_column_corrs() %>%
+  mutate(type=str_c(ifelse(sample1 %in% SAMPLES_SC, "sc", "bulk"),
+               ifelse(sample2 %in% SAMPLES_SC, "sc", "bulk"),
+               sep="-"))
+
+plot_corrs(df_lui_twoutr_corrs, ylab="Inter-Experiment LUI Spearman Correlation")
+
+ggsave("output/figure2/ed2d-mescs-lui-twoutr-corrs-bars.pdf", width=3, height=4, dpi=300)
+```
+
+# Table
+```{r combined_table}
+full_join(df_tpm_corrs, df_lui_twoutr_corrs, by=c("sample1", "sample2", "type"),
+          suffix=c(x="_TPM", y="_LUI")) %>%
+  select(sample1, sample2, rho_TPM, rho_LUI, type) %>%
+  arrange(type, sample1, sample2) %>%
+  knitr::kable()
+```
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

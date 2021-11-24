@@ -1,0 +1,76 @@
+---
+title: "Compare 10X Chromium vs Microwell-seq"
+author: "Mervin Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    toc: true
+    toc_depth: 2
+---
+
+# Purpose 
+
+Here we compare the read alignments of 10X Chromium 3'-end and Microwell-Seq scRNA-seq data.
+
+# Libraries
+```{r libs, warning=FALSE, message=FALSE}
+library(Gviz)
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+```
+
+# Vamp2
+## Load Track Data
+```{r}
+options(ucscChromosomeNames=FALSE)
+CHR="chr11"
+START=69091600
+END=69092600
+
+txdb <- TxDb.Mmusculus.UCSC.mm10.knownGene
+
+grtrack <-  GeneRegionTrack(txdb, chromosome=CHR, start=START, end=END, symbol="Vamp2",
+                            showId=TRUE, name="Vamp2", geneSymbol=TRUE, )
+tr_genome <- GenomeAxisTrack(v=10)
+
+## MCA Data
+tr_mca_raw <- AlignmentsTrack(range="data/bam/mca.raw.bladder.vamp2.bam", name="Microwell-Seq\n(Raw)", 
+                              genome="mm10", chromosome=CHR, type="coverage")
+tr_mca_ass <- AlignmentsTrack(range="data/bam/mca.assembled.bladder.vamp2.bam", name="Microwell-Seq\n(Assembled)",
+                              genome="mm10", chromosome=CHR, type="coverage")
+
+## Tabula Muris Data
+tr_tm_1 <- AlignmentsTrack(range="data/bam/tmuris.bladder.p4_3.vamp2.bam", name="10X Chromium", 
+                    genome="mm10", chromosome=CHR, type="coverage")
+tr_tm_2 <- AlignmentsTrack(range="data/bam/tmuris.bladder.p4_3.vamp2.bam", name="10X Chromium", 
+                    genome="mm10", chromosome=CHR, type="coverage")
+tr_tm_3 <- AlignmentsTrack(range="data/bam/tmuris.bladder.p7_7.vamp2.bam", name="10X Chromium", 
+                    genome="mm10", chromosome=CHR, type="coverage")
+```
+
+## Plots
+### All Tracks
+```{r vamp2_all, fig.width=5, fig.height=5}
+plotTracks(list(tr_mca_ass, tr_mca_raw, tr_tm_1, tr_tm_2, tr_tm_3, grtrack, tr_genome), 
+           sizes=c(4,4,4,4,4,1,2), from=START, to=END)
+```
+
+### Select Tracks
+```{r vamp2_select, fig.width=5, fig.height=5}
+plotTracks(list(tr_tm_2, tr_mca_raw, tr_mca_ass, grtrack, tr_genome), 
+           sizes=c(4,4,4,1,2), from=START, to=END)
+```
+
+### Export
+```{r}
+pdf("output/fig1A-10x-vs-microwell-vamp2.pdf", width=5, height=5)
+plotTracks(list(tr_tm_2, tr_mca_raw, tr_mca_ass, grtrack, tr_genome), 
+           sizes=c(4,4,4,1,2), from=START, to=END)
+dev.off()
+```
+
+---
+
+# Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```

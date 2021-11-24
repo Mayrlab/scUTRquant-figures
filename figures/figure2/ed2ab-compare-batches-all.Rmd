@@ -1,0 +1,214 @@
+---
+title: "Compare Transcript TPMs - All Batches"
+author: "Mervin M Fansler"
+date: '`r format(Sys.time(), "%d %B %Y")`'
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Libraries
+
+```{r libs, message=FALSE, warning=FALSE}
+library(SummarizedExperiment)
+library(SingleCellExperiment)
+library(Matrix)
+library(tidyverse)
+library(ggbeeswarm)
+library(magrittr)
+library(cowplot)
+
+theme_set(theme_bw())
+```
+
+# Methods
+```{r methods}
+compute_column_corrs <- function (df, method="spearman", use="complete.obs") {
+  df %>%
+    as.matrix %>% cor(method=method, use=use) %>% 
+    `[<-`(lower.tri(.,TRUE), NA) %>%
+    as_tibble(rownames="sample1") %>% 
+    pivot_longer(cols=-1, names_to="sample2", values_to="rho", values_drop_na=TRUE)
+}
+
+plot_corrs <- function (df, ylab="Spearman Correlation") {
+  ggplot(df, aes(x=type, y=rho, fill=type)) +
+    stat_summary(fun='mean', geom='bar', width=0.6, color='black') + 
+    stat_summary(fun.data=mean_sdl, geom='errorbar', width=0.4) +
+    geom_quasirandom(width=0.2, size=0.5) +
+    geom_text(aes(x=type, label=str_c("N=", after_stat(count)), y=NULL), 
+              stat="count", y=0.03, size=3) +
+    scale_y_continuous(limits=c(0,1), expand=expansion(add=c(0,0))) +
+    labs(x=NULL, y=ylab) +
+    guides(fill=FALSE)
+}
+```
+
+# Load Data
+```{r load_data}
+se <- readRDS("data/se/hspcs_bulk.txs.clean.rds")
+
+sce <- readRDS("data/sce/hspcs.txs.full_annot.rds") %>%
+  `[`(rownames(se),)
+```
+
+## Compute TPM
+```{r compute_tpm}
+## Sample Names
+SAMPLES_BULK <- c('HSCa', 'HSCb', 'HSCc', 'HSCd')
+SAMPLES_SC_14 <- str_c("14/Stem_SIGA", c("B", "C", "D"), "1")
+SAMPLES_SC_0 <- str_c("0_SIGA", c("B", "C", "D"), "1")
+SAMPLES_SC_COMBINED <- str_c("scRNA-seq ", c("1", "2", "3"))
+SAMPLES_SC <- c(SAMPLES_SC_14, SAMPLES_SC_0)
+SAMPLES_SC_ALL <- c(SAMPLES_SC, SAMPLES_SC_COMBINED)
+
+M.cells_celltype_sample <- colData(sce) %>% 
+  as_tibble %$%
+  str_c(clusters, sample, sep="_") %>%
+  fac2sparse %>% t %>%
+  `[`(,SAMPLES_SC) %>%
+  cbind(.[,SAMPLES_SC_14] + .[,SAMPLES_SC_0]) %>%
+  `colnames<-`(SAMPLES_SC_ALL)
+
+cts.celltype_sample <- assay(sce, "normcounts") %*% M.cells_celltype_sample
+
+tpm.hsc.sc <- cts.celltype_sample %>% 
+  { . %*% Diagonal(1e6/colSums(.), n=ncol(.)) } %>%
+  as.matrix
+
+tpm.hsc.bulk <- assay(se, 'counts') %>% 
+  { . %*% Diagonal(1e6/colSums(.), n=ncol(se)) } %>%
+  `[`(, se$cell_type == 'HSC') %>%
+  as.matrix
+
+all(rownames(tpm.hsc.bulk) == rownames(tpm.hsc.sc)) %>%
+  { if (.) "Yes" else "No"} %>%
+  sprintf(fmt="Are all genes present and in identical order? %s")
+
+## convert to tibbles, then join
+df_bulk <- as_tibble(tpm.hsc.bulk, rownames="transcript_name")
+df_sc <- as_tibble(tpm.hsc.sc, rownames="transcript_name")
+
+df_tpm <- left_join(df_bulk, df_sc, by="transcript_name") %>%
+  right_join(x=rowData(se)[,c("transcript_name", "gene_symbol")] %>% as.data.frame, by="transcript_name")
+```
+
+
+# LUI
+```{r compute_lui}
+SAMPLE_COLS=c(SAMPLES_BULK, SAMPLES_SC_ALL)
+
+df_lui <- df_tpm %>% 
+  pivot_longer(all_of(SAMPLE_COLS), names_to='sample', values_to="tpm") %>%
+  group_by(gene_symbol, sample) %>%
+  filter(n() > 1) %>%
+  mutate(lui=tpm/sum(tpm, na.rm=TRUE),
+         utr_pos=row_number(as.integer(str_extract(transcript_name,
+                                                   "[^.]+$")))) %>%
+  filter(utr_pos == max(utr_pos)) %>% 
+  ungroup() %>%
+  select(gene_symbol, sample, lui) %>%
+  pivot_wider(names_from='sample', values_from='lui')
+
+MIN_TPM=0
+df_lui_two <- df_tpm %>% 
+  pivot_longer(all_of(SAMPLE_COLS), names_to='sample', values_to="tpm") %>%
+  group_by(transcript_name) %>%
+  filter(all(tpm > MIN_TPM)) %>%
+  ungroup() %>%
+  group_by(gene_symbol, sample) %>%
+  filter(n() == 2) %>%
+  mutate(lui=tpm/sum(tpm, na.rm=TRUE),
+         utr_pos=row_number(as.integer(str_extract(transcript_name,
+                                                   "[^.]+$")))) %>%
+  filter(utr_pos == max(utr_pos)) %>% 
+  ungroup() %>%
+  select(gene_symbol, sample, lui) %>%
+  pivot_wider(names_from='sample', values_from='lui')
+```
+
+
+## Combined
+### TPM
+```{r compare_tpm_combined, fig.width=3, fig.height=4, warning=FALSE}
+SAMPLE_COLS_TPM=c(SAMPLES_BULK, SAMPLES_SC_COMBINED)
+
+df_tpm_corrs <- df_tpm[,SAMPLE_COLS_TPM] %>% 
+  compute_column_corrs %>%
+  mutate(type=str_c(ifelse(str_detect(sample1, "scRNA"), "sc", "bulk"),
+               ifelse(str_detect(sample2, "scRNA"), "sc", "bulk"),
+               sep="-"))
+
+plot_corrs(df_tpm_corrs, ylab="Batch-Batch TPM Spearman Correlation")
+
+ggsave("output/figure2/ed2a-sommerkamp-tpm-corrs-bars.pdf",
+       width=3, height=4, dpi=300)
+```
+
+### LUI - All Multi-UTR
+```{r compare_lui_combined, fig.width=3, fig.height=4, warning=FALSE}
+SAMPLE_COLS_LUI=c(SAMPLES_BULK, SAMPLES_SC_COMBINED)
+
+df_lui_corrs <- df_lui[,SAMPLE_COLS_LUI] %>% 
+  compute_column_corrs %>%
+  mutate(type=str_c(ifelse(str_detect(sample1, "scRNA"), "sc", "bulk"),
+               ifelse(str_detect(sample2, "scRNA"), "sc", "bulk"),
+               sep="-"))
+
+plot_corrs(df_lui_corrs, ylab="Batch-Batch LUI Spearman Correlation")
+
+
+ggsave("output/figure2/ed2b-sommerkamp-lui-multiutr-corrs-bars.pdf",
+       width=3, height=4, dpi=300)
+```
+
+### LUI - Two-UTR
+```{r compare_lui_twoutr_combined, fig.width=3, fig.height=4, warning=FALSE}
+SAMPLE_COLS_LUI=c(SAMPLES_BULK, SAMPLES_SC_COMBINED)
+
+df_lui_two_corrs <- df_lui_two[,SAMPLE_COLS_LUI] %>% 
+  compute_column_corrs %>%
+  mutate(type=str_c(ifelse(str_detect(sample1, "scRNA"), "sc", "bulk"),
+               ifelse(str_detect(sample2, "scRNA"), "sc", "bulk"),
+               sep="-"))
+
+plot_corrs(df_lui_two_corrs, ylab="Batch-Batch LUI Spearman Correlation")
+
+ggsave("output/figure2/ed2b-sommerkamp-lui-twoutr-corrs-bars.pdf",
+       width=3, height=4, dpi=300)
+```
+
+
+# Tables
+```{r}
+full_join(df_tpm_corrs, df_lui_two_corrs, by=c("sample1", "sample2", "type"),
+          suffix=c(x="_TPM", y="_LUI")) %>%
+  select(sample1, sample2, rho_TPM, rho_LUI, type) %>%
+  arrange(type, sample1, sample2) %>%
+  knitr::kable()
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

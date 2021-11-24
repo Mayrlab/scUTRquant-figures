@@ -1,0 +1,169 @@
+---
+title: "Expanded Cell Types - WD Test"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+Here we compare an expanded set of cell types, with an emphasis on differentiation.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(cowplot)
+library(ggridges)
+library(SingleCellExperiment)
+library(scutrboot)
+library(BiocParallel)
+```
+
+## Parameters
+```{r set_params}
+set.seed(20211026)
+register(MulticoreParam(10))
+N_BOOTSTRAPS=10000
+MIN_NCELLS=50
+
+celltype_map <- c(
+  "Bone Marrow (LSK,LK) - 14/Stem"="HSC",
+  "Bone Marrow (LSK,LK) - 12/Ery"="Ery",
+  "Bone Marrow (LSK,LK) - 7/Neu"="Neutro",
+  "Bone Marrow (LSK,LK) - 6/Baso"="Baso",
+  "Bone Marrow (LSK,LK) - 5/Mo"="Mono",
+  "Brain - OLG"="ODC",
+  "Brain - OPC"="OPC",
+  "Brain - ImmN"="imNeur",
+  "Brain - mNEUR"="mNeur",
+  "Trachea - epithelial cell"="TraEpi",
+  "Trachea - mesenchymal cell"="TraMes",
+  "Mammary_Gland - luminal epithelial cell of mammary gland"="lumMamm",
+  "Mammary_Gland - basal cell"="basMamm",
+  "Thymus - immature T cell"="Timm",
+  "Spleen - T cell"="TSpleen",
+  "Spleen - B cell"="BSpleen",
+  "Mammary_Gland - T cell"="TMamm",
+  "Mammary_Gland - B cell"="BMamm",
+  "Brain - ASC"="Astro",
+  "Brain - MG"="MG",
+  "Brain - NendC"="NeurEC",
+  "Brain - EC"="endo",
+  "Embryo - mESC"="mESC",
+  "Embryo - MEF"="MEF"
+)
+
+test_pairs <- list(
+  c("mESC", "MEF"),
+  c("HSC", "Ery"),
+  c("HSC", "Neutro"),
+  c("HSC", "Baso"),
+  c("HSC", "Mono"),
+  c("Timm", "TSpleen"),
+  c("OPC", "ODC"),
+  c("imNeur", "mNeur"),
+  c("TraMes", "TraEpi"),
+  c("lumMamm", "basMamm"),
+  c("TSpleen", "TMamm"),
+  c("TSpleen", "BSpleen"),
+  c("mNeur", "NeurEC"),
+  c("mNeur", "Astro"),
+  c("mNeur", "ODC"),
+  c("mNeur", "MG"),
+  c("mNeur", "endo")
+)
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+sce <- readRDS("data/sce/merged.txs.full_annot.Rds")
+```
+
+## Preprocessing
+```{r prepare_data}
+colData(sce)['tissue_celltype'] <- colData(sce) %>% 
+  { str_c(.$tissue, " - ", .$cell_type) }
+idx_cells <- colData(sce) %>% { (.$age != 'old') & (.$tissue_celltype %in% names(celltype_map)) }
+idx_txs <- rowData(sce) %>% { (!.$is_blacklisted) & (!.$is_ipa) & (.$atlas.utr_type == "multi") }
+
+sce %<>% `[`(idx_txs, idx_cells)
+
+colData(sce)['celltype_label'] <- celltype_map[sce$tissue_celltype]
+
+gene_id2sym <- rowData(sce) %>% as_tibble %$% setNames(gene_symbol, gene_id)
+```
+
+# Analysis
+
+# Two-Sample Tests
+```{r wd_tests}
+res <- bplapply(test_pairs, function (p) {
+  testTwoSample(sce, assayName="normcounts",
+                sampleKey="celltype_label", geneKey="gene_id",
+                sample0=p[[1]], sample1=p[[2]], 
+                statistic="WD", featureExclude="is_ipa",
+                nBootstraps=N_BOOTSTRAPS, minCellsPerGene=MIN_NCELLS) %>%
+    as_tibble() %>%
+    mutate(start=p[[1]], end=p[[2]]) %>%
+    select(gene, start, end, stat, pval, bootstraps)
+})
+
+df_tests <- do.call(rbind, res) %>%
+  mutate(gene_symbol=gene_id2sym[gene],
+         qval=p.adjust(pval, "BH")) %>%
+  select(gene_symbol, gene, everything())
+
+df_tests %>% arrange(pval) %>% head(50) %>% knitr::kable()
+```
+
+```{r hist_pvals}
+hist(df_tests$pval, breaks=40, xlab="p-value",
+     main="Distribution of p-values for Two-Sample WD Tests")
+```
+
+
+```{r hists_by_celltype, fig.width=8, fig.height=12}
+df_tests %>%
+  mutate(test_pair=str_c(end, " vs ", start)) %>%
+  ggplot(aes(x=pval, y=test_pair)) +
+  geom_density_ridges(stat='binline', bins=40, scale=0.95) +
+  labs(x="p-value", y=NULL, title="WD Tests") +
+  theme_minimal_vgrid()
+```
+
+# Export
+```{r export}
+sprintf("data/dtu/%s-diff-pairwise-wd-tests.min50.boot10k.tsv.gz", format(Sys.time(), '%Y%m%d')) %>%
+  write_tsv(x=df_tests)
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash conda_env, comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

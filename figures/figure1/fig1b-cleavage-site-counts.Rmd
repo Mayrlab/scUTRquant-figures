@@ -1,0 +1,113 @@
+---
+title: "Cleavage Site Counts"
+author: "Author"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+Generate plot for cleavage site counts. Numbers result from the counting lines 
+(`wc -l`) of each the four BED files emitted by the MCA atlas pipeline.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(VennDiagram)
+library(tidyverse)
+library(cowplot)
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+df_cleavage <- tibble(
+  class=factor(c("Validated", "Supported", "Likely", "Unlikely"),
+               levels=c("Validated", "Supported", "Likely", "Unlikely")),
+  count=c(31196, 25361, 9214, 37483)
+)
+
+n_mca <- sum(df_cleavage$count)
+n_gencode <- 118787
+n_pas_ge3 <- 46436
+```
+
+
+# Plot
+## Counts Bars
+```{r plt_counts_bar, fig.width=4, fig.height=4}
+df_cleavage %>%
+  ggplot(aes(x=class, y=count)) +
+  geom_bar(stat='identity', color='black', fill='lightgrey') +
+  geom_text(aes(label=count), nudge_y=1000) +
+  labs(x="Category", y="Cleavage Sites") +
+  scale_y_continuous(expand=c(0, 0, 0, 2000)) +
+  theme_bw()
+
+ggsave("output/figure1/fig1b-cleavage-site-counts.pdf", width=4, height=4, dpi=300)
+```
+
+## Venns
+```{r plt_venn_gencode, fig.width=4, fig.height=4}
+n_intersect <- df_cleavage %>% { .[[which(.$class == "Validated"), "count"]] }
+draw.pairwise.venn(n_gencode, n_mca, n_intersect, c("GENCODE", "MCA"),
+                   fill=c("#AA2222", "#2222AA")) %>%
+  plot_grid()
+
+
+ggsave("output/figure1/fig1b-mca-gencode-venn.pdf", width=3, height=3, dpi=300)
+```
+
+```{r plt_venn_pas, fig.width=4, fig.height=4}
+n_unvalidated <- df_cleavage %>% { .[which(.$class != "Validated"), "count"] } %>%
+  sum()
+n_intersect <- df_cleavage %>% { .[[which(.$class == "Supported"), "count"]] }
+draw.pairwise.venn(n_unvalidated, n_pas_ge3, n_intersect, c("MCA", "PAS"),
+                   scaled=TRUE,
+                   fill=c("#AA2222", "#2222AA")) %>%
+  plot_grid()
+
+
+ggsave("output/figure1/fig1b-mca-pas-venn.pdf", width=3, height=3, dpi=300)
+```
+
+```{r plt_ip_counts, fig.width=4, fig.height=4}
+df_cleavage %>%
+  filter(class %in% c("Likely", "Unlikely")) %>%
+  mutate(share=count/sum(count)) %>%
+  ggplot(aes(x="", y=count, fill=class)) +
+  geom_col() +
+  coord_polar(theta="y") +
+  theme_cowplot()
+  
+
+ggsave("output/figure1/fig1b-internal-priming-pie.pdf", width=3, height=3, dpi=300)
+```
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

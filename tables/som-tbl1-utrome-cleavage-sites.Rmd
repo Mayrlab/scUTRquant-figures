@@ -1,0 +1,75 @@
+---
+title: "Atlas of Cleavage Sites Table"
+author: "Mervin M Fanlser"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+This script generates an XLSX formatted version of cleavage sites using the mouse
+UTRome GTF annotation.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(writexl)
+library(GenomicFeatures)
+library(GenomicRanges)
+library(plyranges)
+library(rtracklayer)
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+gr_utrome <- read_gff("data/gtf/adult.utrome.e3.t200.f0.999.w500.gtf.gz") %>%
+  filter(type == "transcript")
+df_ipa <- read_tsv("data/gtf/adult.utrome.e3.t200.f0.999.w500.ipa.tsv")
+```
+
+## Preprocessing
+```{r prepare_data}
+df_utrome <- as_tibble(gr_utrome) %>%
+  select(transcript_id, transcript_name, gene_id, seqnames, start, end, strand) %>%
+  mutate(cleavage_site=ifelse(strand == '+', end, start)) %>%
+  arrange(seqnames, cleavage_site) %>%
+  dplyr::rename(tx_id=transcript_name, tx_name=transcript_id) %>%
+  mutate(cleavage_type=ifelse(tx_name %in% df_ipa$tx_name, "intronic", "last_exon")) %>%
+  dplyr::select(tx_name, tx_id, gene_id, seqnames, strand, cleavage_site, cleavage_type)
+```
+
+# Export
+```{r export_xlsx}
+write_xlsx(df_utrome, "output/tables/SOM Table 1.xlsx")
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

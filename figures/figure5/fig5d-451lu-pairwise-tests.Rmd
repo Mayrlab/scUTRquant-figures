@@ -1,0 +1,244 @@
+---
+title: "Melanoma B-Raf Inhibitor Resistance - "
+author: "Mervin Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+Demonstrate the use of scUTRquant and scUTRboot on a dataset of 451Lu cells with
+and without B-Raf inhibitor resistance.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(cowplot)
+library(ggbeeswarm)
+library(Matrix)
+library(matrixStats)
+library(SingleCellExperiment)
+library(rtracklayer)
+library(plyranges)
+library(scran)
+library(scater)
+library(scutrboot)
+```
+
+## Parameters
+```{r set_params}
+set.seed(20210818)
+N_BOOTSTRAPS=10000
+MIN_NCELLS=50
+```
+
+## Functions
+```{r methods}
+plot_pval_histogram <- function (df) {
+  ggplot(df, aes(x=pval)) +
+    geom_histogram(boundary=0, bins=41, 
+                   color='black', fill='lightgrey', size=0.2) +
+    scale_x_continuous(expand=c(0.02,0.02)) +
+    scale_y_continuous(expand=c(0,0,0,100)) +
+    labs(x="p-values", y="Genes") +
+    theme_bw()
+}
+
+## computes the diversity of txs represented per cell
+## 2^(entropy)
+compute_effective_count <- function (sce) {
+  cts <- counts(sce) %>% Matrix(sparse=TRUE)
+  pct <- (cts %*% Diagonal(ncol(cts), 1/colSums(cts)))
+  lpct <- pct
+  lpct@x <- log2(lpct@x)
+  2^(-colSums(pct*lpct))
+}
+
+compute_mt_pct <- function (sce) {
+  cts_mt <- colSums(counts(sce[rowData(sce)$is_mt,]))
+  cts_mt/sce$total_umis
+}
+```
+
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+sce <- readRDS("data/sce/ho18.txs.Rds")
+
+gr_txs <- import.gff("data/gtf/gencode.v38.annotation.pc.txcutr.w500.gtf.gz", 
+                     colnames=c("type", "gene_id", "transcript_id"), genome="hg38") %>%
+  filter(type == 'transcript') %>%
+  select(-c("type")) %>%
+  keepStandardChromosomes()
+```
+
+## Preprocessing
+### Add annotations
+```{r annotate_txs}
+colData(sce)["total_umis"] <- colSums(counts(sce))
+colData(sce)["effective_txs"] <- compute_effective_count(sce)
+
+## filter unexpressed txs
+sce %<>% `[`(rowSums(counts(.)) > 0,)
+
+df_annots <- gr_txs %>% 
+  filter(transcript_id %in% rownames(sce)) %>%
+  anchor_3p() %>%
+  plyranges:::set_width.AnchoredGenomicRanges() %>%
+  as_tibble %>%
+  group_by(gene_id) %>%
+  mutate(signed_end=ifelse(strand == "+", 1, -1)*end,
+         utr_rank=rank(signed_end),
+         is_su=utr_rank == min(utr_rank),
+         is_lu=utr_rank == max(utr_rank)) %>%
+  ungroup() %>%
+  select(transcript_id, gene_id, utr_rank, seqnames, strand, end, is_su, is_lu) %>%
+  mutate(is_mt=seqnames == "chrM") %>%
+  DataFrame() %>%
+  set_rownames(.$transcript_id)
+
+rowData(sce) <- df_annots[rownames(sce),]
+
+colData(sce)["pct_mt"] <- compute_mt_pct(sce)
+```
+
+### Plot MT Percent
+```{r plot_mt, fig.width=4, fig.height=4}
+colData(sce) %>%
+  as_tibble %>%
+  ggplot(aes(x=sample_id, y=pct_mt)) +
+  geom_violin() +
+  geom_quasirandom(size=0.1) +
+  coord_cartesian(ylim=c(0,0.25))
+```
+
+### Filter High MT
+```{r filter_mt}
+sce %<>% `[`(,.$pct_mt < 0.1)
+```
+
+### Plot Effective Txs
+```{r plot_eff_txs, fig.width=4, fig.height=4}
+colData(sce) %>%
+  as_tibble %>%
+  ggplot(aes(x=sample_id, y=effective_txs)) +
+  geom_violin() +
+  geom_quasirandom(size=0.1)
+```
+
+### Filter Low Diversity Cells
+```{r filter_low_diversity}
+sce %<>% `[`(,.$effective_txs >= 500)
+```
+
+### Compute Size Factors and Normalized Counts
+```{r size_factors}
+sce <- computeSumFactors(sce)
+assay(sce, "normcounts") <- normalizeCounts(sce, log=FALSE)
+```
+
+### Export
+```{r export_filtered}
+saveRDS(sce, file="data/sce/processed/ho18.txs.filtered.Rds")
+```
+
+# Analysis
+
+## LUI Test: 451Lu iBRAF Resistant vs Parental
+
+```{r test_lui}
+df_test_lui <- testTwoSample(sce, assayName="normcounts",
+                             sampleKey="sample_id", geneKey="gene_id",
+                             sample0="451Lu_parental", sample1="451Lu_resistant", 
+                             statistic="UI", featureIndex="is_lu",
+                             minCellsPerGene=MIN_NCELLS, 
+                             nBootstraps=N_BOOTSTRAPS) %>%
+  as_tibble() %>%
+  mutate(qval=p.adjust(pval, method="BH"))
+
+df_test_lui %>%
+  filter(abs(stat) >= 0.15, qval < 0.05) %T>%
+  { print(sprintf("Detected %d significant LUI changes", nrow(.))) } %>%
+  arrange(qval,-abs(stat)) %>%
+  head(20) %>%
+  knitr::kable()
+```
+
+### P-Values Plot
+```{r plot_pvals_lui, fig.width=4, fig.height=2}
+plot_pval_histogram(df_test_lui)
+
+ggsave("output/figure5/sup-pvals-451lu-lui.pdf", width=4, height=2, dpi=300)
+```
+
+### Export
+```{r export_lui}
+sprintf("data/dtu/%s-451lu-twosample-lui.min50.boot10k.tsv.gz", 
+        format(Sys.time(), '%Y%m%d')) %>%
+  write_tsv(x=df_test_lui)
+```
+
+# Differential Gene Expression
+## Convert to Gene Counts
+```{r txs_to_genes}
+M_gene_tx <- fac2sparse(rowData(sce)$gene_id)
+cts_genes <- M_gene_tx %*% counts(sce)
+
+sce_genes <- SingleCellExperiment(assays=list(counts=cts_genes), colData=colData(sce))
+
+sce_genes <- logNormCounts(sce_genes)
+```
+
+## DGE Test
+```{r dge_test}
+df_dge <- findMarkers(sce_genes, groups=sce_genes$sample_id) %>%
+    `[[`("451Lu_resistant") %>%
+    as_tibble(rownames="gene_id") %>%
+    dplyr::rename(pval=p.value, qval=FDR, log2FC=summary.logFC) %>%
+    mutate(start="451Lu_parental", end="451Lu_resistant") %>%
+    select(gene_id, start, end, log2FC, pval, qval)
+```
+
+### P-Values Plot
+```{r plot_pvals_t, fig.width=4, fig.height=2}
+plot_pval_histogram(df_dge)
+
+ggsave("output/figure5/sup-pvals-451lu-gene-t-tests.pdf", width=4, height=2, dpi=300)
+```
+
+### Export
+```{r export_t}
+sprintf("data/dge/%s-451lu-t-tests.tsv.gz", format(Sys.time(), '%Y%m%d')) %>%
+  write_tsv(x=df_dge)
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```
