@@ -1,5 +1,5 @@
 ---
-title: "Compare CellRanger vs scUTRquant Counts"
+title: "Compare CellRanger vs scUTRquant Counts - PBMC"
 author: "Mervin Fansler"
 date: "`r format(Sys.time(), '%d %B %Y')`"
 output: 
@@ -8,12 +8,15 @@ output:
     toc_depth: 2
 ---
 
-# Purpose 
+# Overview 
 
 Here we compare the count results of CellRanger versus scUTRquant using the 10X
 Chromium 3'-end demonstration data (v2 and v3). This gauges consistency with gene-level
 count pipelines, indicating the appropriateness for substituting scUTRquant for 
-alternative scRNA-seq quantification tools.
+alternative scRNA-seq quantification tools. CellRanger counts are based on a 
+CellRanger-filtered version of Ensembl Release 93 for GRCh38. sqUTRquant counts 
+use a human UTRome build based on GENCODE v39 augmented with cleavage sites called
+from the Human Cell Landscape (Han et al., *Nature*, 2020).
 
 # Libraries
 ```{r libs, message=FALSE, warning=FALSE}
@@ -30,7 +33,7 @@ library(Matrix)
 
 # Data
 ```{r load_data, message=FALSE, warning=FALSE}
-SAMPLE_SHEET="metadata/counts_sample_sheet_mm10_v2.csv"
+SAMPLE_SHEET="metadata/counts_sample_sheet_pbmc_utrome.csv"
 
 ## conform 10X cell ids to match scUTRquant cell_id
 conform_cell_ids <- function (sample_id, sce) {
@@ -44,19 +47,9 @@ conform_cell_ids <- function (sample_id, sce) {
   sce
 }
 
-## conform Ensembl IDs (no version)
+## conform to unversioned ENSEMBL gene_id
 conform_gene_ids <- function (sce) {
-  sce %>%
-    set_rownames(str_extract(rownames(.), "^ENSMUSG[0-9]+"))
-}
-
-## summarize scUTRquant transcript counts to gene counts
-txs_to_genes <- function (sce) {
-  M_genes_txs <- rowData(sce)$gene_id %>%
-    fac2sparse %>%
-    set_rownames(str_extract(rownames(.), "^ENSMUSG[0-9]+"))
-  SingleCellExperiment(assays=list(counts=M_genes_txs %*% counts(sce)),
-                       colData=colData(sce))
+  set_rownames(sce, str_extract(rownames(sce), "^ENSG[0-9]+"))
 }
   
 df_counts <- read_csv(SAMPLE_SHEET) %>%
@@ -67,11 +60,8 @@ df_counts <- read_csv(SAMPLE_SHEET) %>%
   ## adjust cell_ids
   mutate(sce_10x=map2(sample_id, sce_10x, conform_cell_ids)) %>%
   
-  ## adjust gene_ids
-  mutate(sce_sq=map(sce_sq, conform_gene_ids))
-  
   ## summarize to gene counts
-  #mutate(sce_sq=map(sce_sq, txs_to_genes))
+  mutate(sce_sq=map(sce_sq, conform_gene_ids))
 ```
 
 # UMI Counts Per Cell
@@ -108,7 +98,7 @@ df_cells_prho %>%
   labs(x=NULL, y="Cell UMI Counts Pearson Correlation") +
   theme_bw()
 
-ggsave("output/figure1/fig1B-umi-corrs-pearson-inset.pdf", width=2, height=4, dpi=300)
+ggsave("output/figure5/utrome/fig5A-umi-corrs-pearson-inset.pdf", width=2, height=4, dpi=300)
 
 df_cells_prho %>% 
   ggplot(aes(x=n_lab, y=rho)) +
@@ -120,7 +110,7 @@ df_cells_prho %>%
   labs(x=NULL, y="Cell UMI Counts Pearson Correlation") +
   theme_bw()
 
-ggsave("output/figure1/fig1B-umi-corrs-pearson-inset-zoom.pdf", width=2, height=4, dpi=300)
+ggsave("output/figure5/utrome/fig5A-umi-corrs-pearson-inset-zoom.pdf", width=2, height=4, dpi=300)
 
 df_cells_srho %>%
   ggplot(aes(x=n_lab, y=rho)) +
@@ -131,7 +121,7 @@ df_cells_srho %>%
   labs(x=NULL, y="Cell UMI Counts Spearman Correlation") +
   theme_bw()
 
-ggsave("output/figure1/fig1B-umi-corrs-spearman-inset.pdf", width=2, height=4, dpi=300)
+ggsave("output/figure5/utrome/fig5A-umi-corrs-spearman-inset.pdf", width=2, height=4, dpi=300)
 
 df_cells_srho %>%
   ggplot(aes(x=n_lab, y=rho)) +
@@ -143,7 +133,7 @@ df_cells_srho %>%
   labs(x=NULL, y="Cell UMI Counts Spearman Correlation") +
   theme_bw()
 
-ggsave("output/figure1/fig1B-umi-corrs-spearman-inset-zoom.pdf", width=2, height=4, dpi=300)
+ggsave("output/figure5/utrome/fig5A-umi-corrs-spearman-inset-zoom.pdf", width=2, height=4, dpi=300)
 ```
 
 ### Dots
@@ -160,7 +150,7 @@ plot_umis_per_cell_compare <- function (sce_x, sce_y,
                          cor(df$x, df$y, method='spearman'))
   label_lims <- axis_lims %>% { c(.[1]^0.75*.[2]^0.25, .[1]^0.05*.[2]^0.95)}
   ggplot(df, aes(x=x, y=y)) +
-    rasterize(geom_point(alpha=alpha, size=0.3, pch=16), dpi=300) +
+    rasterize(geom_point(alpha=alpha, size=0.3, pch=16)) +
     annotate("text", x=label_lims[1], y=label_lims[2], label=label_rho_s, size=4, parse=TRUE) +
     geom_abline(slope=1, intercept=0, linetype='dashed', color="red") +
     scale_x_log10(limits=axis_lims) + scale_y_log10(limits=axis_lims) +
@@ -177,7 +167,7 @@ df_counts %>%
       print(.[[id]] + ggtitle(id))
       
       ## save to PDFs
-      ggsave(sprintf("output/figure1/fig1B-umis-per-cell-compare-%s.pdf", id), 
+      ggsave(sprintf("output/figure5/utrome/fig5A-umis-per-cell-compare-%s.pdf", id),
              .[[id]], width=5, height=4, dpi=300)
     }
   }
@@ -219,7 +209,7 @@ df_genes_prho %>%
   labs(x=NULL, y="Gene UMI Counts Pearson Correlation") +
   theme_bw()
 
-ggsave("output/figure1/fig1C-umi-corrs-pearson-inset.pdf", width=2, height=4, dpi=300)
+ggsave("output/figure5/utrome/fig5B-umi-corrs-pearson-inset.pdf", width=2, height=4, dpi=300)
 
 df_genes_prho %>% 
   ggplot(aes(x=n_lab, y=rho)) +
@@ -227,11 +217,11 @@ df_genes_prho %>%
   stat_summary(fun.data=mean_se, geom='errorbar', width=0.3) +
   geom_quasirandom(width=0.1, size=1) +
   scale_y_continuous(limits=c(0,1), expand=expansion(add=c(0,0))) +
-  coord_cartesian(ylim=c(0.9,1)) +
+  coord_cartesian(ylim=c(0.8,1)) +
   labs(x=NULL, y="Gene UMI Counts Pearson Correlation") +
   theme_bw()
 
-ggsave("output/figure1/fig1C-umi-corrs-pearson-inset-zoom.pdf", width=2, height=4, dpi=300)
+ggsave("output/figure5/utrome/fig5B-umi-corrs-pearson-inset-zoom.pdf", width=2, height=4, dpi=300)
 
 df_genes_srho %>%
   ggplot(aes(x=n_lab, y=rho)) +
@@ -242,7 +232,7 @@ df_genes_srho %>%
   labs(x=NULL, y="Gene UMI Counts Spearman Correlation") +
   theme_bw()
 
-ggsave("output/figure1/fig1C-umi-corrs-spearman-inset.pdf", width=2, height=4, dpi=300)
+ggsave("output/figure5/utrome/fig5B-umi-corrs-spearman-inset.pdf", width=2, height=4, dpi=300)
 
 df_genes_srho %>%
   ggplot(aes(x=n_lab, y=rho)) +
@@ -250,11 +240,11 @@ df_genes_srho %>%
   stat_summary(fun.data=mean_se, geom='errorbar', width=0.3) +
   geom_quasirandom(width=0.1, size=1) +
   scale_y_continuous(limits=c(0,1), expand=expansion(add=c(0,0))) +
-  coord_cartesian(ylim=c(0.9,1)) +
+  coord_cartesian(ylim=c(0.8,1)) +
   labs(x=NULL, y="Gene UMI Counts Spearman Correlation") +
   theme_bw()
 
-ggsave("output/figure1/fig1C-umi-corrs-spearman-inset-zoom.pdf", width=2, height=4, dpi=300)
+ggsave("output/figure5/utrome/fig5B-umi-corrs-spearman-inset-zoom.pdf", width=2, height=4, dpi=300)
 ```
 
 ### Dots
@@ -271,7 +261,7 @@ plot_umis_per_gene_compare <- function (sce_x, sce_y,
                          cor(df$x, df$y, method='spearman'))
   label_lims <- axis_lims %>% { c(.[1]^0.75*.[2]^0.25, .[1]^0.05*.[2]^0.95)}
   ggplot(df, aes(x=x+1, y=y+1)) +
-    rasterize(geom_point(alpha=0.3, size=0.1, pch=16), dpi=300) +
+    rasterize(geom_point(alpha=0.3, size=0.1, pch=16)) +
     annotate("text", x=label_lims[1], y=label_lims[2], label=label_rho_s, size=4, parse=TRUE) +
     geom_abline(slope=1, intercept=0, linetype='dashed', color="red") +
     scale_x_log10(limits=axis_lims) + scale_y_log10(limits=axis_lims) +
@@ -288,7 +278,7 @@ df_counts %>%
       print(.[[id]] + ggtitle(id))
       
       ## save to PDFs
-      ggsave(sprintf("output/figure1/fig1C-umis-per-gene-compare-%s.pdf", id), 
+      ggsave(sprintf("output/figure5/utrome/fig5B-umis-per-gene-compare-%s.pdf", id),
              .[[id]], width=5, height=4, dpi=300)
     }
   }
@@ -299,7 +289,22 @@ df_counts %>%
 
 ---
 
-# Session Info
+# Runtime Details
+## Session Info
 ```{r sesh_info, echo=FALSE}
 sessionInfo()
+```
+
+## Conda Environment
+```{bash conda, comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
 ```

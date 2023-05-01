@@ -107,10 +107,27 @@ ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-all.pdf", width=6, heigh
 
 ## Table 
 ```{r tbl_all_genes}
-df_sig_all %>%
+map_sig <- c("FALSE_FALSE"="NS",
+             "FALSE_TRUE"="DTU",
+             "TRUE_FALSE"="DGE",
+             "TRUE_TRUE"="Both")
+
+df_wide_all <- df_sig_all %>%
   group_by(start, end) %>%
   dplyr::count(sig_gene, sig_isoform) %>%
-  knitr::kable()
+  mutate(result=map_sig[str_c(sig_gene,sig_isoform, sep="_")]) %>%
+  ungroup() %>%
+  pivot_wider(id_cols=c("start", "end"), names_from="result", values_from="n", values_fill=0L) %>%
+  mutate("All genes"=NS+DTU+DGE+Both) %>%
+  rename("Cell Type 1"=start, "Cell Type 2"=end) %>%
+  select(`Cell Type 1`, `Cell Type 2`, NS:Both)
+
+knitr::kable(df_wide_all)
+```
+
+## Export Table
+```{r export_tbl_all}
+write_xlsx(df_wide_all, "output/tables/sup-tbl3-extended-celltypes-chisq-results-t-tests-all.xlsx")
 ```
 
 # Multi-UTR Genes
