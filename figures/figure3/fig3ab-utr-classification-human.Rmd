@@ -1,0 +1,188 @@
+---
+title: "Multi-UTR Genes - Human Atlas"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+Classify genes according to usage of multiple 3' UTR isoforms across
+mouse atlas of cell types.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(cowplot)
+```
+
+## Parameters
+```{r set_params}
+MIN_NCELLS=50
+```
+
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+df <- read_tsv("data/utrs/hg38/utr_metadata.tsv")
+
+df_annots <- read_tsv("data/utrs/hg38/utrome_txs_annotation.tsv")
+```
+
+```{r summarize_counts_all}
+n_txs_all <- df_annots %>% distinct(transcript_id) %>% nrow
+n_genes_all <- df_annots %>% distinct(gene_id) %>% nrow
+n_multi_all <- df_annots %>% filter(atlas.utr_type == 'multi') %>% distinct(gene_id) %>% nrow
+n_single_all <- df_annots %>% filter(atlas.utr_type == 'single') %>% distinct(gene_id) %>% nrow
+
+stopifnot(n_single_all + n_multi_all == n_genes_all)
+```
+
+The UTRome includes annotations for `r n_txs_all` transcripts
+in `r n_genes_all` genes. Of these, `r n_multi_all` (`r sprintf("%0.1f%%", 100*n_multi_all/n_genes_all)`) 
+are multi-UTR, and `r n_single_all` (`r sprintf("%0.1f%%", 100*n_single_all/n_genes_all)`) are
+single-UTR genes.
+
+```{r expressed_only}
+txs_idx <- df_annots %>%
+  filter(atlas.ncelltypes_gene > 0) %>%
+  pull(transcript_id)
+
+df %<>%
+  filter(expressed.tx, 
+         transcript_id %in% txs_idx)
+```
+
+```{r summarize_counts_expressed}
+n_txs <- df %>% distinct(transcript_id) %>% nrow
+n_genes <- df %>% distinct(gene_id) %>% nrow
+n_multi <- df %>% filter(utr.type.pct10.no_ipa == 'multi') %>% distinct(gene_id) %>% nrow
+n_single <- df %>% filter(utr.type.pct10.no_ipa  == 'single') %>% distinct(gene_id) %>% nrow
+
+stopifnot(n_single_all + n_multi_all == n_genes_all)
+```
+
+After processing Tabula Sapiens  to consider only for `r n_txs` transcripts
+in `r n_genes` genes. Of these, `r n_multi` (`r sprintf("%0.1f%%", 100*n_multi/n_genes)`) 
+are multi-UTR, and `r n_single` (`r sprintf("%0.1f%%", 100*n_single/n_genes)`) are
+single-UTR genes.
+
+## Preprocessing
+```{r prepare_data}
+df_ncts <- df_annots %>%
+  group_by(gene_id) %>%
+  summarize(ncelltypes_atlas=dplyr::first(atlas.ncelltypes_gene))
+
+df_multi <- df %>%
+  group_by(gene_id) %>%
+  summarize(nutr_pct05=dplyr::first(utr.count.celltypes.pct05.no_ipa),
+            nutr_pct10=dplyr::first(utr.count.celltypes.pct10.no_ipa),
+            ncelltypes_pct05=max(utr.ncelltypes.pct05.no_ipa),
+            ncelltypes_pct10=max(utr.ncelltypes.pct10.no_ipa),
+            nutr_pct05_lbl=ifelse(nutr_pct05 > 5, "6+", as.character(nutr_pct05)),
+            nutr_pct10_lbl=ifelse(nutr_pct10 > 5, "6+", as.character(nutr_pct10)),
+            .groups='drop') %>%
+  left_join(df_ncts, by="gene_id")
+```
+
+# Plots
+
+## Multi-UTRs - 5% Cell Type
+
+```{r fig_pct_05, fig.width=3, fig.height=3}
+df_counts <- df_multi %>%
+  group_by(nutr_pct05_lbl) %>%
+  summarize(n=n())
+
+df_multi %>%
+  mutate(utr_type=ifelse(nutr_pct05 > 1, "multi", "single")) %>%
+  ggplot(aes(x=nutr_pct05_lbl)) +
+  geom_histogram(aes(fill=utr_type), stat='count', color='black') +
+  geom_text(data=df_counts, mapping=aes(label=n, y=n+500)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  scale_fill_manual(values=c("#6E90BB", "lightgrey")) +
+  labs(x="3' UTR Isoform Count", y="Number of Genes") +
+  guides(fill="none") +
+  theme_minimal_hgrid()
+
+ggsave("output/figure3/ed3a-n-utr-isoforms-pct05.human.pdf", width=4, height=4, dpi=300)
+```
+
+## Multi-UTRs - 10% Cell Type
+
+```{r fig_pct_10, fig.width=3, fig.height=3}
+df_counts <- df_multi %>%
+  group_by(nutr_pct10_lbl) %>%
+  summarize(n=n())
+
+df_multi %>%
+  mutate(utr_type=ifelse(nutr_pct10 > 1, "multi", "single")) %>%
+  ggplot(aes(x=nutr_pct10_lbl)) +
+  geom_histogram(aes(fill=utr_type), stat='count', color='black') +
+  geom_text(data=df_counts, mapping=aes(label=n, y=n+500)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  scale_fill_manual(values=c("#6E90BB", "lightgrey")) +
+  labs(x="3' UTR Isoform Count", y="Number of Genes") +
+  guides(fill=FALSE) +
+  theme_minimal_hgrid()
+
+ggsave("output/figure3/fig3a-n-utr-isoforms-pct10.human.pdf", width=4, height=4, dpi=300)
+```
+
+
+# Cell Types Expressing
+## Grouped Bins
+### Custom 5
+```{r grouped_bins_5, fig.width=4.5, fig.height=4}
+df_binned <- df_multi %>%
+  mutate(utr_type=ifelse(nutr_pct10 > 1, "multi", "single"),
+         utr_type=factor(utr_type, levels=c("single", "multi")),
+         ncelltypes_bin=cut(ncelltypes_atlas, 
+                             breaks=c(0,2.5, 25.5, 50.5, 150.5, 300.5, 400),
+                             labels=c("1-2", "3-25", "26-50", "51-150", "151-300", "301+")))
+
+
+## Filled Bars
+df_binned %>%
+  ggplot(aes(x=ncelltypes_bin, fill=utr_type)) +
+  geom_bar(position='fill') +
+  geom_text(aes(label=after_stat(count)), stat="count", position=position_fill(vjust=0.5)) +
+  scale_fill_manual(values=c("lightgrey", "#6E90BB")) +
+  scale_y_continuous(labels=scales::percent_format(), expand=rep(0,4)) +
+  labs(x="Number of Cell Types Expressing",
+       y="Genes", fill="UTR Type") +
+  theme_bw()
+
+ggsave("output/figure3/fig3c-ncelltypes-gene-pct10.filled-bars.human.pdf", width=4.5, height=4, dpi=300)
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```
