@@ -33,10 +33,10 @@ library(pheatmap)
 ```{r set_params}
 set.seed(20211020)
 MAX_QVAL=0.05
-MIN_FC=2.0
+MIN_FC=1.5
 MIN_L2FC=log2(MIN_FC)
 
-TSV_TESTS="data/dge/20221222-ery-trajectory-pairwise-t-tests.tsv.gz"
+TSV_TESTS="data/dge/20230516-ery-trajectory-pairwise-t-tests.tsv.gz"
 SCE_GENES="data/sce/hspcs.genes.full_annot.Rds"
 
 PDF_OUT_UTRTYPE=sprintf("output/figure4/fig4d-dge-fc%0.1f-hsc-ery-path-utr-type.pdf", MIN_FC)
@@ -118,7 +118,7 @@ M_cell_celltype <- t(fac2sparse(sce$clusters))[,celltypes]
 ## compute luis
 cts_gene_celltype <- cts_gene_cell %*% M_cell_celltype
 tpm_gene_celltype <- cts_gene_celltype %>% 
-  { . %*% Diagonal(ncol(.), 1e6/colSums(.)) } %>%
+  { . %*% Diagonal(ncol(.), 1e6/colSums(.), names=TRUE) } %>%
   as.matrix
 ztpm_gene_celltype <- t(tpm_gene_celltype) %>% scale %>% t
 ```

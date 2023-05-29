@@ -30,7 +30,7 @@ library(Matrix)
 # Load and Preprocess Data
 ```{r load_data, message=FALSE, warning=FALSE}
 set.seed(20210723)
-SAMPLE_SHEET="metadata/counts_sample_sheet.csv"
+SAMPLE_SHEET="metadata/counts_sample_sheet_mm10_v2.csv"
 
 ## conform 10X cell ids to match scUTRquant cell_id
 conform_cell_ids <- function (sample_id, sce) {
@@ -42,6 +42,12 @@ conform_cell_ids <- function (sample_id, sce) {
     set_rownames(.$cell_id) %>%
     DataFrame()
   sce
+}
+
+## conform Ensembl IDs (no version)
+conform_gene_ids <- function (sce) {
+  sce %>%
+    set_rownames(str_extract(rownames(.), "^ENSMUSG[0-9]+"))
 }
 
 ## summarize scUTRquant transcript counts to gene counts
@@ -95,7 +101,10 @@ df_counts <- read_csv(SAMPLE_SHEET) %>%
   mutate(sce_10x=map2(sample_id, sce_10x, conform_cell_ids)) %>%
   
   ## summarize to gene counts
-  mutate(sce_sq=map(sce_sq, txs_to_genes)) %>%
+  #mutate(sce_sq=map(sce_sq, txs_to_genes)) %>%
+  
+  ## adjust gene_ids
+  mutate(sce_sq=map(sce_sq, conform_gene_ids)) %>%
   
   ## filter low-diversity cells
   mutate(sce_sq=map(sce_sq, filter_low_diversity_cells),

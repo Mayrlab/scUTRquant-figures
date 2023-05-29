@@ -48,10 +48,15 @@ plot_corrs <- function (df, ylab="Spearman Correlation") {
 
 # Load Data
 ```{r load_data}
-se <- readRDS("data/se/hspcs_bulk.txs.clean.rds")
+se <- readRDS("data/se/hspcs_bulk.txs.rds")
 
 sce <- readRDS("data/sce/hspcs.txs.full_annot.rds") %>%
   `[`(rownames(se),)
+if (!("sample_id" %in% colnames(colData(sce))) & ("sample_id.x" %in% colnames(colData(sce)))) {
+  colData(sce)['sample_id'] <- sce$sample_id.x
+  colData(sce)['sample_id.x'] <- NULL
+  colData(sce)['sample_id.y'] <- NULL
+}
 ```
 
 ## Compute TPM
@@ -66,7 +71,7 @@ SAMPLES_SC_ALL <- c(SAMPLES_SC, SAMPLES_SC_COMBINED)
 
 M.cells_celltype_sample <- colData(sce) %>% 
   as_tibble %$%
-  str_c(clusters, sample, sep="_") %>%
+  str_c(clusters, sample_id, sep="_") %>%
   fac2sparse %>% t %>%
   `[`(,SAMPLES_SC) %>%
   cbind(.[,SAMPLES_SC_14] + .[,SAMPLES_SC_0]) %>%
@@ -75,11 +80,11 @@ M.cells_celltype_sample <- colData(sce) %>%
 cts.celltype_sample <- assay(sce, "normcounts") %*% M.cells_celltype_sample
 
 tpm.hsc.sc <- cts.celltype_sample %>% 
-  { . %*% Diagonal(1e6/colSums(.), n=ncol(.)) } %>%
+  { . %*% Diagonal(1e6/colSums(.), n=ncol(.), names=TRUE) } %>%
   as.matrix
 
 tpm.hsc.bulk <- assay(se, 'counts') %>% 
-  { . %*% Diagonal(1e6/colSums(.), n=ncol(se)) } %>%
+  { . %*% Diagonal(1e6/colSums(.), n=ncol(se), names=TRUE) } %>%
   `[`(, se$cell_type == 'HSC') %>%
   as.matrix
 
@@ -88,11 +93,11 @@ all(rownames(tpm.hsc.bulk) == rownames(tpm.hsc.sc)) %>%
   sprintf(fmt="Are all genes present and in identical order? %s")
 
 ## convert to tibbles, then join
-df_bulk <- as_tibble(tpm.hsc.bulk, rownames="transcript_name")
-df_sc <- as_tibble(tpm.hsc.sc, rownames="transcript_name")
+df_bulk <- as_tibble(tpm.hsc.bulk, rownames="transcript_id")
+df_sc <- as_tibble(tpm.hsc.sc, rownames="transcript_id")
 
-df_tpm <- left_join(df_bulk, df_sc, by="transcript_name") %>%
-  right_join(x=rowData(se)[,c("transcript_name", "gene_symbol")] %>% as.data.frame, by="transcript_name")
+df_tpm <- left_join(df_bulk, df_sc, by="transcript_id") %>%
+  right_join(x=rowData(se)[,c("transcript_id", "gene_id")] %>% as.data.frame, by="transcript_id")
 ```
 
 
@@ -100,32 +105,33 @@ df_tpm <- left_join(df_bulk, df_sc, by="transcript_name") %>%
 ```{r compute_lui}
 SAMPLE_COLS=c(SAMPLES_BULK, SAMPLES_SC_ALL)
 
+df_annots <- rowData(sce) %>% as_tibble %>%
+  select(transcript_id, utr_position)
+
 df_lui <- df_tpm %>% 
+  left_join(df_annots, by='transcript_id') %>%
   pivot_longer(all_of(SAMPLE_COLS), names_to='sample', values_to="tpm") %>%
-  group_by(gene_symbol, sample) %>%
+  group_by(gene_id, sample) %>%
   filter(n() > 1) %>%
-  mutate(lui=tpm/sum(tpm, na.rm=TRUE),
-         utr_pos=row_number(as.integer(str_extract(transcript_name,
-                                                   "[^.]+$")))) %>%
-  filter(utr_pos == max(utr_pos)) %>% 
+  mutate(lui=tpm/sum(tpm, na.rm=TRUE)) %>%
+  filter(utr_position == max(utr_position)) %>% 
   ungroup() %>%
-  select(gene_symbol, sample, lui) %>%
+  select(gene_id, sample, lui) %>%
   pivot_wider(names_from='sample', values_from='lui')
 
 MIN_TPM=0
 df_lui_two <- df_tpm %>% 
+  left_join(df_annots, by='transcript_id') %>%
   pivot_longer(all_of(SAMPLE_COLS), names_to='sample', values_to="tpm") %>%
-  group_by(transcript_name) %>%
+  group_by(transcript_id) %>%
   filter(all(tpm > MIN_TPM)) %>%
   ungroup() %>%
-  group_by(gene_symbol, sample) %>%
+  group_by(gene_id, sample) %>%
   filter(n() == 2) %>%
-  mutate(lui=tpm/sum(tpm, na.rm=TRUE),
-         utr_pos=row_number(as.integer(str_extract(transcript_name,
-                                                   "[^.]+$")))) %>%
-  filter(utr_pos == max(utr_pos)) %>% 
+  mutate(lui=tpm/sum(tpm, na.rm=TRUE)) %>%
+  filter(utr_position == max(utr_position)) %>% 
   ungroup() %>%
-  select(gene_symbol, sample, lui) %>%
+  select(gene_id, sample, lui) %>%
   pivot_wider(names_from='sample', values_from='lui')
 ```
 

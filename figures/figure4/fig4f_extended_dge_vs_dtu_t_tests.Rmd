@@ -28,21 +28,24 @@ library(cowplot)
 ```{r set_params}
 MAX_QVAL=0.05
 MIN_L2FC=log2(1.5)
-MIN_WD=0.15
+MIN_DWUI=0.10
+
+TEST_DTU="data/dtu/20230523-diff-pairwise-wui-tests.min50.boot10k.tsv.gz"
+TEST_DGE="data/dge/20230523-diff-pairwise-t-tests.tsv.gz"
 ```
 
 # Data
 ## Loading
 ```{r load_data, message=FALSE}
-df_dtu <- read_tsv("data/dtu/20211026-diff-pairwise-wd-tests.min50.boot10k.tsv.gz") %>%
+df_dtu <- read_tsv(TEST_DTU) %>%
   dplyr::rename(gene_id=gene)
-df_dge <- read_tsv("data/dge/20211026-diff-pairwise-t-tests.tsv.gz")
+df_dge <- read_tsv(TEST_DGE)
 ```
 
 ## Preprocessing
 ```{r prepare_data}
 df_sig_dtu <- df_dtu %>%
-  mutate(sig_isoform=qval < MAX_QVAL & abs(stat) >= MIN_WD) %>%
+  mutate(sig_isoform=qval < MAX_QVAL & abs(stat) >= MIN_DWUI) %>%
   select(gene_id, start, end, sig_isoform)
 
 df_sig_dge <- df_dge %>%
@@ -119,7 +122,7 @@ df_wide_all <- df_sig_all %>%
   ungroup() %>%
   pivot_wider(id_cols=c("start", "end"), names_from="result", values_from="n", values_fill=0L) %>%
   mutate("All genes"=NS+DTU+DGE+Both) %>%
-  rename("Cell Type 1"=start, "Cell Type 2"=end) %>%
+  dplyr::rename("Cell Type 1"=start, "Cell Type 2"=end) %>%
   select(`Cell Type 1`, `Cell Type 2`, NS:Both)
 
 knitr::kable(df_wide_all)
@@ -208,10 +211,10 @@ df_wide <- df_sig_multi %>%
   pivot_wider(id_cols=c("start", "end"), names_from="result", values_from="n", values_fill=0L) %>%
   mutate("Coexpressed multi-UTR genes"=NS+DTU+DGE+Both) %>%
   left_join(df_chisq, by=c("start", "end")) %>%
-  rename("Cell Type 1"=start,
-         "Cell Type 2"=end,
-         "Chi-squared"=statistic,
-         "p-value"=p.value) %>%
+  dplyr::rename("Cell Type 1"=start,
+                "Cell Type 2"=end,
+                "Chi-squared"=statistic,
+                "p-value"=p.value) %>%
   select(`Cell Type 1`, `Cell Type 2`, `Coexpressed multi-UTR genes`,
          NS:Both, `Chi-squared`, `p-value`)
 

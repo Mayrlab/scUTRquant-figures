@@ -30,7 +30,7 @@ set.seed(20211021)
 N_BOOTSTRAPS=10000
 MIN_NCELLS=50
 
-genes_to_plot <- c("Jpt1", "Lmo4")
+genes_to_plot <-  c("Sting1", "Ankrd9", "Ero1l", "Cyb5b", "Rac1", "Riok3")
 
 celltype_ery <- c("14/Stem"="HSC", "0"="Prog1",
                   "3"="Prog2", "10"="MEP", "8"="ProE",
@@ -42,26 +42,27 @@ colors_ery <- c("HSC"="#826CC7", "Prog1"="#2B4285",
   { setNames(desaturate(lighten(.,0.2), 0.3), names(.)) }
 ```
 
-# Functions
-```{r}
-
-```
-
 # Data
 ## Loading
 ```{r load_data}
 sce <- readRDS("data/sce/hspcs.txs.full_annot.Rds")
 
+if (!("sample_id" %in% colnames(colData(sce))) & ("sample_id.x" %in% colnames(colData(sce)))) {
+  colData(sce)['sample_id'] <- sce$sample_id.x
+  colData(sce)['sample_id.x'] <- NULL
+  colData(sce)['sample_id.y'] <- NULL
+}
+
 idx_cells <- sce$clusters %in% names(celltype_ery)
-idx_txs <- rowData(sce) %>% { (!.$is_ipa) & (.$gene_symbol %in% genes_to_plot) }
+idx_txs <- rowData(sce) %>% { (!.$is_ipa) & (.$gene_name %in% genes_to_plot) }
 
 # filter to multiutrs in celltypes of interest
 sce %<>% `[`(idx_txs, idx_cells)
 
 colData(sce)['cell_type'] <- factor(celltype_ery[sce$clusters], levels=celltype_ery)
-colData(sce)['celltype_batch'] <- colData(sce) %>% { str_c(.$cell_type, "/", .$sample) }
+colData(sce)['celltype_batch'] <- colData(sce) %>% { str_c(.$cell_type, "/", .$sample_id) }
 
-gene_id2sym <- rowData(sce) %>% as_tibble %$% setNames(gene_symbol, gene_id)
+gene_id2sym <- rowData(sce) %>% as_tibble %$% setNames(gene_name, gene_id)
 ```
 
 ## Preprocessing
@@ -80,8 +81,9 @@ test_pairs <- M_cell_batch %>%
 ```
 
 # Two-Sample Tests
+## LUI
 ```{r lui_tests}
-res <- bplapply(test_pairs, function (p) {
+res_lui <- bplapply(test_pairs, function (p) {
   testTwoSample(sce, assayName="normcounts",
                 sampleKey="celltype_batch", geneKey="gene_id",
                 sample0=p[[1]], sample1=p[[2]], 
@@ -92,23 +94,27 @@ res <- bplapply(test_pairs, function (p) {
     select(gene, start, end, stat, pval, bootstraps)
 })
 
-df_tests <- do.call(rbind, res) %>%
+df_tests_lui <- do.call(rbind, res_lui) %>%
   mutate(gene_symbol=gene_id2sym[gene],
-         celltype=factor(str_extract(start, "^[^/]+"), levels=celltype_ery),
-         qval=p.adjust(pval, "BH")) %>%
+         celltype=factor(str_extract(start, "^[^/]+"), levels=celltype_ery)) %>%
+  ## compute q-value per gene since we only show the individual examples
+  group_by(gene_symbol) %>% 
+  mutate(qval=p.adjust(pval, "BH")) %>%
+  ungroup() %>%
   select(gene_symbol, gene, celltype, everything())
 
-df_tests %>% arrange(pval) %>% head(50) %>% knitr::kable()
+df_tests_lui %>% arrange(pval) %>% head(50) %>% knitr::kable()
 ```
 
-```{r hist_pvals}
-hist(df_tests$pval, breaks=40, xlab="p-value",
+### P-values All
+```{r hist_pvals_lui}
+hist(df_tests_lui$pval, breaks=40, xlab="p-value",
      main="Distribution of p-values for Two-Sample LUI Tests")
 ```
 
-
+### P-values by Cell Type
 ```{r hists_by_celltype, fig.width=8, fig.height=12}
-df_tests %>%
+df_tests_lui %>%
   mutate(test_pair=str_c(start, " vs ", end)) %>%
   ggplot(aes(x=pval, y=celltype)) +
   geom_density_ridges(stat='binline', bins=40, scale=0.95) +
@@ -116,11 +122,72 @@ df_tests %>%
   theme_minimal_vgrid()
 ```
 
-# Export
-```{r export}
+### Export
+```{r export_lui}
 sprintf("data/dtu/%s-ery-batches-pairwise-lui-tests.min50.boot10k.tsv.gz", format(Sys.time(), '%Y%m%d')) %>%
-  write_tsv(x=df_tests)
+  write_tsv(x=df_tests_lui)
 ```
+
+## WUI
+### Compute UTR Weights
+```{r utr_wt}
+rowData(sce) %<>% as_tibble() %>%
+  group_by(gene_id) %>%
+  mutate(utr_rank=rank(utr_position),
+         utr_wt=(utr_rank - 1)/(max(utr_rank) - 1)) %>%
+  ungroup() %>%
+  as.data.frame() %>%
+  DataFrame(row.names=.$transcript_id) %T>%
+  { stopifnot(all(rownames(.) == rownames(sce))) }
+```
+
+### Tests
+```{r wui_tests}
+res_wui <- bplapply(test_pairs, function (p) {
+  testTwoSample(sce, assayName="normcounts",
+                sampleKey="celltype_batch", geneKey="gene_id",
+                sample0=p[[1]], sample1=p[[2]], 
+                statistic="WUI", featureIndex="utr_wt",
+                nBootstraps=N_BOOTSTRAPS, minCellsPerGene=MIN_NCELLS) %>%
+    as_tibble() %>%
+    mutate(start=p[[1]], end=p[[2]]) %>%
+    select(gene, start, end, stat, pval, bootstraps)
+})
+
+df_tests_wui <- do.call(rbind, res_wui) %>%
+  mutate(gene_symbol=gene_id2sym[gene],
+         celltype=factor(str_extract(start, "^[^/]+"), levels=celltype_ery)) %>%
+  ## compute q-value per gene since we only show the individual examples
+  group_by(gene_symbol) %>% 
+  mutate(qval=p.adjust(pval, "BH")) %>%
+  ungroup() %>%
+  select(gene_symbol, gene, celltype, everything())
+
+df_tests_wui %>% arrange(pval) %>% head(50) %>% knitr::kable()
+```
+
+### P-values All
+```{r hist_pvals_wui}
+hist(df_tests_wui$pval, breaks=40, xlab="p-value",
+     main="Distribution of p-values for Two-Sample WUI Tests")
+```
+
+### P-values by Cell Type
+```{r hists_by_celltype_wui, fig.width=8, fig.height=12}
+df_tests_wui %>%
+  mutate(test_pair=str_c(start, " vs ", end)) %>%
+  ggplot(aes(x=pval, y=celltype)) +
+  geom_density_ridges(stat='binline', bins=40, scale=0.95) +
+  labs(x="p-value", y=NULL, title="WUI Tests") +
+  theme_minimal_vgrid()
+```
+
+### Export
+```{r export_wui}
+sprintf("data/dtu/%s-ery-batches-pairwise-wui-tests.min50.boot10k.tsv.gz", format(Sys.time(), '%Y%m%d')) %>%
+  write_tsv(x=df_tests_wui)
+```
+
 
 ---
 

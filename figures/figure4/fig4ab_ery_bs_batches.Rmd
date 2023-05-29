@@ -11,9 +11,8 @@ output:
 
 # Purpose
 
-Illustrate use of bootstrapping for estimating mean LUI usage. Splitting by batches
+Illustrate use of bootstrapping for estimating mean WUI usage. Splitting by batches
 to emphasize variance between batches is smaller than variance across celltypes.
-
 
 # Initialization
 
@@ -33,9 +32,11 @@ library(colorspace)
 ```{r set_params}
 set.seed(20211021)
 N_BOOTSTRAPS=2000
-MIN_NCELLS=50
+MIN_NCELLS=1
+MIN_UI_RANGE=0.4
 
-genes_to_plot <- c("Jpt1", "Lmo4", "Cd47")
+genes_to_plot <- c("Sting1", "Ankrd9", "Ero1l", "Cyb5b", "Rac1", "Spta1", "Riok3", 
+                   "Pim1", "Cd24a")
 
 celltype_ery <- c("14/Stem"="HSC", "0"="Prog1",
                   "3"="Prog2", "10"="MEP", "8"="ProE",
@@ -72,19 +73,18 @@ bootstrap_lui <- function (cts, M.groups, M.LU, M.gene, num_boot=100) {
   LUI.bs
 }
 
-plot_lui_bootstraps <- function (gene, df, keep_order=TRUE) {
-  df %>%
-    filter(gene == !!gene) %>%
-    ggplot(aes(x=cell_type, y=lui, fill=cell_type, group=ct_b)) +
-    geom_boxplot(outlier.shape=NA, size=0.2) +
-    coord_flip() +
-    scale_y_continuous(limits=c(0,1), breaks=seq(0,1,0.1)) +
-    scale_fill_manual(values=colors_ery) +
-    labs(x=NULL, y="LUI") +
-    guides(fill=FALSE) +
-    theme_bw()
+bootstrap_wui <- function (cts, M.groups, M.WUI, M.gene, num_boot=100) {
+  M.bs <- boot_sparse(M.groups, num_boot)
+  WUI.bs <- ((M.WUI %*% cts) %*% M.bs) / ((M.gene %*% cts) %*% M.bs)
+  WUI.bs
 }
 
+bootstrap_gene <- function (tpm, M.groups, M.gene, num_boot=100) {
+  M.bs <- boot_sparse(M.groups, num_boot)
+  D_scale <- colSums(M.bs) %>% { Diagonal(length(.), 1/., names=TRUE) }
+  tpm.bs <- (M.gene %*% tpm) %*% M.bs %*% D_scale
+  tpm.bs
+}
 ```
 
 
@@ -92,12 +92,22 @@ plot_lui_bootstraps <- function (gene, df, keep_order=TRUE) {
 ## Loading
 ```{r load_data, message=FALSE}
 sce <- readRDS("data/sce/hspcs.txs.full_annot.Rds")
+
+if (!("sample_id" %in% colnames(colData(sce))) & ("sample_id.x" %in% colnames(colData(sce)))) {
+  colData(sce)['sample_id'] <- sce$sample_id.x
+  colData(sce)['sample_id.x'] <- NULL
+  colData(sce)['sample_id.y'] <- NULL
+}
 ```
 
 ## Preprocessing
 ```{r filter_data}
 idx_cells <- sce$clusters %in% names(celltype_ery)
-idx_txs <- rowData(sce) %>% { (!.$is_ipa) & (.$gene_symbol %in% genes_to_plot) }
+idx_txs <- rowData(sce) %>% { (!.$is_ipa) & (.$gene_name %in% genes_to_plot) }
+
+D_cts_tpm <- assay(sce[,idx_cells], 'normcounts') %>%
+  colSums() %>%
+  { Diagonal(length(.), 1e6/.) }
 
 sce %<>% `[`(idx_txs, idx_cells)
 
@@ -107,7 +117,7 @@ colData(sce)['cell_type'] <- factor(celltype_ery[sce$clusters], levels=celltype_
 ## Design Matrices
 ```{r design_mats}
 M_cell_batch <- colData(sce) %>% 
-  { str_c(.$cell_type, "/", .$sample) } %>%
+  { str_c(.$cell_type, "/", .$sample_id) } %>%
   fac2sparse %>% t()
 
 idx_ctbs <- M_cell_batch %>%
@@ -121,11 +131,20 @@ idx_ctbs <- M_cell_batch %>%
 
 M_cell_batch %<>% `[`(,idx_ctbs)
 
-M_gene_tx <- rowData(sce)$gene_symbol %>% fac2sparse
+M_gene_tx <- rowData(sce)$gene_name %>% fac2sparse
 M_lu_tx <- drop0(M_gene_tx %*% Diagonal(ncol(M_gene_tx), rowData(sce)$is_lu))
+
+M_wu_tx <- rowData(sce) %>% as_tibble %>%
+  group_by(gene_name) %>%
+  mutate(utr_rank=rank(utr_position),
+         utr_wt=(utr_rank - 1)/(max(utr_rank) - 1)) %>%
+  ungroup() %>%
+  pull(utr_wt, name=transcript_id) %>%
+  { drop0(M_gene_tx %*% Diagonal(ncol(M_gene_tx), ., names=TRUE)) }
 ```
 
-# Compute LUI Bootstraps
+# Bootstraps
+## LUI
 ```{r compute_lui}
 cts_tx_cell <- assay(sce, "normcounts")
 
@@ -139,33 +158,84 @@ df_ncells <- ncells_gene_batch %>%
   
 lui_bs <- bootstrap_lui(cts_tx_cell, M_cell_batch, M_lu_tx, M_gene_tx, num_boot=N_BOOTSTRAPS)
 
-df_bs <- lui_bs %>%
+df_bs_lui <- lui_bs %>%
   as.matrix %>%
   as_tibble(rownames='gene') %>%
   pivot_longer(cols=-1, names_to="ct_b", names_pattern="^([^_]+)", values_to="lui") %>%
   left_join(df_ncells, by=c("gene", "ct_b"))
 
-ct_bs <- outer(rev(celltype_ery), unique(sce$sample), paste, sep="/") %>% 
+ct_bs_lui <- outer(rev(celltype_ery), unique(sce$sample_id), paste, sep="/") %>% 
   t %>% as.vector %>% 
-  { .[. %in% df_bs$ct_b] }
+  { .[. %in% df_bs_lui$ct_b] }
 
-df_bs %<>%
-  mutate(ct_b=factor(ct_b, levels=ct_bs))
+df_bs_lui %<>%
+  mutate(ct_b=factor(ct_b, levels=ct_bs_lui))
+```
+
+## WUI
+```{r compute_wui}
+wui_bs <- bootstrap_wui(cts_tx_cell, M_cell_batch, 
+                        M_wu_tx, M_gene_tx, num_boot=N_BOOTSTRAPS)
+
+df_bs_wui <- wui_bs %>%
+  as.matrix %>%
+  as_tibble(rownames='gene') %>%
+  pivot_longer(cols=-1, names_to="ct_b", names_pattern="^([^_]+)", values_to="wui") %>%
+  left_join(df_ncells, by=c("gene", "ct_b"))
+
+ct_bs_wui <- outer(rev(celltype_ery), unique(sce$sample_id), paste, sep="/") %>% 
+  t %>% as.vector %>% 
+  { .[. %in% df_bs_wui$ct_b] }
+
+df_bs_wui %<>%
+  mutate(ct_b=factor(ct_b, levels=ct_bs_wui))
+```
+
+## TPM
+```{r compute_tpms}
+tpm_tx_cell <- cts_tx_cell %*% D_cts_tpm
+
+tpm_bs <- bootstrap_gene(tpm_tx_cell, M_cell_batch, 
+                        M_gene_tx, num_boot=N_BOOTSTRAPS)
+
+df_bs_tpm <- tpm_bs %>%
+  as.matrix %>%
+  as_tibble(rownames='gene') %>%
+  pivot_longer(cols=-1, names_to="ct_b", names_pattern="^([^_]+)", values_to="tpm") %>%
+  left_join(df_ncells, by=c("gene", "ct_b"))
+
+ct_bs_tpm <- outer(rev(celltype_ery), unique(sce$sample_id), paste, sep="/") %>% 
+  t %>% as.vector %>% 
+  { .[. %in% df_bs_tpm$ct_b] }
+
+df_bs_tpm %<>%
+  mutate(ct_b=factor(ct_b, levels=ct_bs_tpm))
 ```
 
 # Plots
-## Genes
-```{r plots, fig.width=5, fig.height=5}
-
+## LUI
+```{r plots_lui, fig.width=5, fig.height=5}
 plot_lui_bootstraps_manual <- function (gene, df, keep_order=TRUE) {
   df_tmp <- df %>%
     filter(gene == !!gene) %T>%
-    { axis_limits <<- c(min(.$lui), max(.$lui)+0.05) } %>%
+    { axis_limits <<- c(min(.$lui, na.rm=TRUE), max(.$lui, na.rm=TRUE)) } %>%
     group_by(ct_b, cell_type) %>%
-    summarize(ci025=quantile(lui, 0.025), ci975=quantile(lui, 0.975),
-              ci250=quantile(lui, 0.250), ci750=quantile(lui, 0.750),
+    summarize(ci025=quantile(lui, 0.025, na.rm=TRUE), ci975=quantile(lui, 0.975, na.rm=TRUE),
+              ci250=quantile(lui, 0.250, na.rm=TRUE), ci750=quantile(lui, 0.750, na.rm=TRUE),
               ci500=median(lui), ncells=first(ncells), .groups='drop')
   
+  if (axis_limits[[2]] - axis_limits[[1]] < MIN_UI_RANGE) {
+    mid_axis <- mean(axis_limits)
+    if (mid_axis < MIN_UI_RANGE/2) {
+      axis_limits <- c(0, MIN_UI_RANGE + 0.05)
+    } else if (mid_axis > 1 - MIN_UI_RANGE/2) {
+      axis_limits <- c(1-MIN_UI_RANGE, 1 + 0.05)
+    } else {
+      axis_limits <- c(mid_axis - MIN_UI_RANGE/2, mid_axis + MIN_UI_RANGE/2 + 0.05)
+    }
+  } else {
+    axis_limits[[2]] <- axis_limits[[2]] + 0.05
+  }
   
   ggplot(df_tmp, aes(x=cell_type, y=ci500, fill=cell_type, group=ct_b)) +
     geom_errorbar(aes(ymin=ci025, ymax=ci975, color=cell_type), size=0.5,
@@ -180,25 +250,104 @@ plot_lui_bootstraps_manual <- function (gene, df, keep_order=TRUE) {
     scale_y_continuous(breaks=seq(0,1,0.1)) +
     scale_fill_manual(values=colors_ery) +
     scale_color_manual(values=colors_ery) +
-    labs(x=NULL, y="LUI") +
+    labs(x=NULL, y="LUI", title=gene) +
     guides(fill=FALSE, color=FALSE) +
     theme_bw()
 }
 
 for (g in genes_to_plot) {
-  plot_lui_bootstraps_manual(g, df_bs) %>% print()
+  plot_lui_bootstraps_manual(g, df_bs_lui) %>% print()
   
-  ggsave(sprintf("output/figure4/fig4ab-bootstrap-ery-%s.pdf", g), width=5, height=5, dpi=300)
+  ggsave(sprintf("output/figure4/sup4ab-bootstrap-lui-ery-batches-%s.pdf", g), width=5, height=5, dpi=300)
 }
 ```
 
-# Non-Zero Cell Counts
-```{r}
-cts_genes_cells <- M_gene_tx %*% cts_tx_cell
+## WUI
+```{r plots_wui, fig.width=5, fig.height=5}
+plot_wui_bootstraps_manual <- function (gene, df, keep_order=TRUE) {
+  df_tmp <- df %>%
+    filter(gene == !!gene) %T>%
+    { axis_limits <<- c(min(.$wui, na.rm=TRUE), max(.$wui, na.rm=TRUE)) } %>%
+    group_by(ct_b, cell_type) %>%
+    summarize(ci025=quantile(wui, 0.025, na.rm=TRUE), ci975=quantile(wui, 0.975, na.rm=TRUE),
+              ci250=quantile(wui, 0.250, na.rm=TRUE), ci750=quantile(wui, 0.750, na.rm=TRUE),
+              ci500=median(wui), ncells=first(ncells), .groups='drop')
+  
+  if (axis_limits[[2]] - axis_limits[[1]] < MIN_UI_RANGE) {
+    mid_axis <- mean(axis_limits)
+    if (mid_axis < MIN_UI_RANGE/2) {
+      axis_limits <- c(0, MIN_UI_RANGE + 0.05)
+    } else if (mid_axis > 1 - MIN_UI_RANGE/2) {
+      axis_limits <- c(1-MIN_UI_RANGE, 1 + 0.05)
+    } else {
+      axis_limits <- c(mid_axis - MIN_UI_RANGE/2, mid_axis + MIN_UI_RANGE/2 + 0.05)
+    }
+  } else {
+    axis_limits[[2]] <- axis_limits[[2]] + 0.05
+  }
+  
+  ggplot(df_tmp, aes(x=cell_type, y=ci500, fill=cell_type, group=ct_b)) +
+    geom_errorbar(aes(ymin=ci025, ymax=ci975, color=cell_type), size=0.5,
+                  position=position_dodge(width=0.95), width=0.5) +
+    geom_crossbar(aes(ymin=ci250, ymax=ci750, color=cell_type), size=0.2,
+                  position=position_dodge(width=0.95), width=0.8) +
+    geom_crossbar(aes(ymin=ci500, ymax=ci500), size=0.1, color='black',
+                  position=position_dodge(width=0.95), width=0.8) +
+    geom_text(aes(label=ncells, y=axis_limits[2]),
+              position=position_dodge(width=0.95), size=3, hjust=1) +
+    coord_flip(clip='off', ylim=axis_limits) +
+    scale_y_continuous(breaks=seq(0,1,0.1)) +
+    scale_fill_manual(values=colors_ery) +
+    scale_color_manual(values=colors_ery) +
+    labs(x=NULL, y="WUI", title=gene) +
+    guides(fill=FALSE, color=FALSE) +
+    theme_bw()
+}
 
-ncells_genes_batches <- (cts_genes_cells > 0) %*% M_cell_batch[,ct_bs]
-#ncells_genes_batches
+for (g in genes_to_plot) {
+  plot_wui_bootstraps_manual(g, df_bs_wui) %>% print()
+  
+  ggsave(sprintf("output/figure4/sup4ab-bootstrap-wui-ery-batches-%s.pdf", g), width=5, height=5, dpi=300)
+}
 ```
+
+## Gene TPM
+```{r plots_tpm, fig.width=5, fig.height=5}
+plot_tpm_bootstraps_manual <- function (gene, df, keep_order=TRUE) {
+  df_tmp <- df %>%
+    filter(gene == !!gene) %T>%
+    { axis_limits <<- c(0, max(.$tpm, na.rm=TRUE)) } %>%
+    group_by(ct_b, cell_type) %>%
+    summarize(ci025=quantile(tpm, 0.025), ci975=quantile(tpm, 0.975),
+              ci250=quantile(tpm, 0.250), ci750=quantile(tpm, 0.750),
+              ci500=median(tpm), ncells=first(ncells), .groups='drop')
+  
+  
+  ggplot(df_tmp, aes(x=cell_type, y=ci500, fill=cell_type, group=ct_b)) +
+    geom_errorbar(aes(ymin=ci025, ymax=ci975, color=cell_type), size=0.5,
+                  position=position_dodge(width=0.95), width=0.5) +
+    geom_crossbar(aes(ymin=ci250, ymax=ci750, color=cell_type), size=0.2,
+                  position=position_dodge(width=0.95), width=0.8) +
+    geom_crossbar(aes(ymin=ci500, ymax=ci500), size=0.1, color='black',
+                  position=position_dodge(width=0.95), width=0.8) +
+    geom_text(aes(label=ncells, y=1.05*axis_limits[2]),
+              position=position_dodge(width=0.95), size=3, hjust=1) +
+    coord_flip(clip='off', ylim=axis_limits) +
+    scale_y_continuous(expand=c(0.1,0,0.1,0)) +
+    scale_fill_manual(values=colors_ery) +
+    scale_color_manual(values=colors_ery) +
+    labs(x=NULL, y="TPM", title=gene) +
+    guides(fill=FALSE, color=FALSE) +
+    theme_bw()
+}
+
+for (g in genes_to_plot) {
+  plot_tpm_bootstraps_manual(g, df_bs_tpm) %>% print()
+  
+  ggsave(sprintf("output/figure4/sup4ab-bootstrap-tpm-ery-batches-%s.pdf", g), width=5, height=5, dpi=300)
+}
+```
+
 
 ---
 

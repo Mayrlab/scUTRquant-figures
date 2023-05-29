@@ -19,6 +19,7 @@ library(tidyverse)
 library(magrittr)
 library(cowplot)
 library(GGally)
+library(ggrastr)
 
 theme_set(theme_bw())
 ```
@@ -27,24 +28,29 @@ theme_set(theme_bw())
 ```{r methods}
 lower_geom_point_pct <- function (data, mapping, ...) {
   ggplot(data=data, mapping=mapping, ...) +
-    geom_point(size=0.2, alpha=0.2, pch=16, ...) +
+    geom_point_rast(size=0.2, alpha=0.2, pch=16, ...) +
     geom_abline(linetype='dashed', color='red') +
     lims(x=c(0,1), y=c(0,1))
 }
 
 lower_geom_point <- function (data, mapping, ...) {
   ggplot(data=data, mapping=mapping, ...) +
-    geom_point(size=0.2, alpha=0.2, pch=16, ...) +
+    geom_point_rast(size=0.2, alpha=0.2, pch=16, ...) +
     geom_abline(linetype='dashed', color='red')
 }
 ```
 
 # Load Data
 ```{r load_data}
-se <- readRDS("data/se/hspcs_bulk.txs.clean.rds")
+se <- readRDS("data/se/hspcs_bulk.txs.rds")
 
 sce <- readRDS("data/sce/hspcs.txs.full_annot.rds") %>%
   `[`(rownames(se),)
+if (!("sample_id" %in% colnames(colData(sce))) & ("sample_id.x" %in% colnames(colData(sce)))) {
+  colData(sce)['sample_id'] <- sce$sample_id.x
+  colData(sce)['sample_id.x'] <- NULL
+  colData(sce)['sample_id.y'] <- NULL
+}
 ```
 
 ## Compute TPM
@@ -59,7 +65,7 @@ SAMPLES_SC_ALL <- c(SAMPLES_SC, SAMPLES_SC_COMBINED)
 
 M.cells_celltype_sample <- colData(sce) %>% 
   as_tibble %$%
-  str_c(clusters, sample, sep="_") %>%
+  str_c(clusters, sample_id, sep="_") %>%
   fac2sparse %>% t %>%
   `[`(,SAMPLES_SC) %>%
   cbind(.[,SAMPLES_SC_14] + .[,SAMPLES_SC_0]) %>%
@@ -67,12 +73,12 @@ M.cells_celltype_sample <- colData(sce) %>%
 
 cts.celltype_sample <- assay(sce, "normcounts") %*% M.cells_celltype_sample
 
-tpm.hsc.sc <- cts.celltype_sample %>% 
-  { . %*% Diagonal(1e6/colSums(.), n=ncol(.)) } %>%
+tpm.hsc.sc <- cts.celltype_sample %>%
+  { . %*% Diagonal(1e6/colSums(.), n=ncol(.), names=TRUE) } %>%
   as.matrix
 
 tpm.hsc.bulk <- assay(se, 'counts') %>% 
-  { . %*% Diagonal(1e6/colSums(.), n=ncol(se)) } %>%
+  { . %*% Diagonal(1e6/colSums(.), n=ncol(se), names=TRUE) } %>%
   `[`(, se$cell_type == 'HSC') %>%
   as.matrix
 
@@ -81,11 +87,11 @@ all(rownames(tpm.hsc.bulk) == rownames(tpm.hsc.sc)) %>%
   sprintf(fmt="Are all genes present and in identical order? %s")
 
 ## convert to tibbles, then join
-df_bulk <- as_tibble(tpm.hsc.bulk, rownames="transcript_name")
-df_sc <- as_tibble(tpm.hsc.sc, rownames="transcript_name")
+df_bulk <- as_tibble(tpm.hsc.bulk, rownames="transcript_id")
+df_sc <- as_tibble(tpm.hsc.sc, rownames="transcript_id")
 
-df_tpm <- left_join(df_bulk, df_sc, by="transcript_name") %>%
-  right_join(x=rowData(se)[,c("transcript_name", "gene_symbol")] %>% as.data.frame, by="transcript_name")
+df_tpm <- left_join(df_bulk, df_sc, by="transcript_id") %>%
+  right_join(x=rowData(se)[,c("transcript_id", "gene_id")] %>% as.data.frame, by="transcript_id")
 ```
 
 
@@ -93,32 +99,33 @@ df_tpm <- left_join(df_bulk, df_sc, by="transcript_name") %>%
 ```{r compute_lui}
 SAMPLE_COLS=c(SAMPLES_BULK, SAMPLES_SC_ALL)
 
+df_annots <- rowData(sce) %>% as_tibble %>%
+  select(transcript_id, utr_position)
+
 df_lui <- df_tpm %>% 
+  left_join(df_annots, by='transcript_id') %>%
   pivot_longer(all_of(SAMPLE_COLS), names_to='sample', values_to="tpm") %>%
-  group_by(gene_symbol, sample) %>%
+  group_by(gene_id, sample) %>%
   filter(n() > 1) %>%
-  mutate(lui=tpm/sum(tpm, na.rm=TRUE),
-         utr_pos=row_number(as.integer(str_extract(transcript_name,
-                                                   "[^.]+$")))) %>%
-  filter(utr_pos == max(utr_pos)) %>% 
+  mutate(lui=tpm/sum(tpm, na.rm=TRUE)) %>%
+  filter(utr_position == max(utr_position)) %>% 
   ungroup() %>%
-  select(gene_symbol, sample, lui) %>%
+  select(gene_id, sample, lui) %>%
   pivot_wider(names_from='sample', values_from='lui')
 
 MIN_TPM=0
 df_lui_two <- df_tpm %>% 
+  left_join(df_annots, by='transcript_id') %>%
   pivot_longer(all_of(SAMPLE_COLS), names_to='sample', values_to="tpm") %>%
-  group_by(transcript_name) %>%
+  group_by(transcript_id) %>%
   filter(all(tpm > MIN_TPM)) %>%
   ungroup() %>%
-  group_by(gene_symbol, sample) %>%
+  group_by(gene_id, sample) %>%
   filter(n() == 2) %>%
-  mutate(lui=tpm/sum(tpm, na.rm=TRUE),
-         utr_pos=row_number(as.integer(str_extract(transcript_name,
-                                                   "[^.]+$")))) %>%
-  filter(utr_pos == max(utr_pos)) %>% 
+  mutate(lui=tpm/sum(tpm, na.rm=TRUE)) %>%
+  filter(utr_position == max(utr_position)) %>% 
   ungroup() %>%
-  select(gene_symbol, sample, lui) %>%
+  select(gene_id, sample, lui) %>%
   pivot_wider(names_from='sample', values_from='lui')
 ```
 
@@ -174,7 +181,7 @@ label_rho_s <- sprintf("\"Spearman\" ~ rho == \"%0.3f\"",
 
 df_tpm %>% 
   ggplot(aes(x=log10(HSCb+1), y=log10(HSCc+1))) +
-  geom_point(size=0.2, alpha=0.3, pch=16) +
+  geom_point_rast(size=0.2, alpha=0.3, pch=16) +
   geom_abline(linetype='dashed', color='red') +
   annotate("text", x=label_lims[1], y=label_lims[2], label=label_rho_s, 
            size=4, parse=TRUE) +
@@ -191,7 +198,7 @@ label_rho_s <- sprintf("\"Spearman\" ~ rho == \"%0.3f\"",
 
 df_lui_two %>% 
   ggplot(aes(x=HSCb, y=HSCc)) +
-  geom_point(size=0.3, alpha=0.4, pch=16) +
+  geom_point_rast(size=0.3, alpha=0.4, pch=16) +
   geom_abline(linetype='dashed', color='red') +
   annotate("text", x=0.25, y=0.95, label=label_rho_s, size=4, parse=TRUE) +
   scale_x_continuous(limits=c(0,1), expand=c(0,0)) +
@@ -213,7 +220,7 @@ label_rho_s <- sprintf("\"Spearman\" ~ rho == \"%0.3f\"",
 
 df_tpm %>% 
   ggplot(aes(x=log10(HSCb+1), y=log10(`scRNA-seq 1`+1))) +
-  geom_point(size=0.2, alpha=0.3, pch=16) +
+  geom_point_rast(size=0.2, alpha=0.3, pch=16) +
   geom_abline(linetype='dashed', color='red') +
   annotate("text", x=label_lims[1], y=label_lims[2], label=label_rho_s, 
            size=4, parse=TRUE) +
@@ -230,7 +237,7 @@ label_rho_s <- sprintf("\"Spearman\" ~ rho == \"%0.3f\"",
 
 df_lui_two %>% 
   ggplot(aes(x=HSCb, y=`scRNA-seq 1`)) +
-  geom_point(size=0.3, alpha=0.4, pch=16) +
+  geom_point_rast(size=0.3, alpha=0.4, pch=16) +
   geom_abline(linetype='dashed', color='red') +
   annotate("text", x=0.25, y=0.95, label=label_rho_s, size=4, parse=TRUE) +
   scale_x_continuous(limits=c(0,1), expand=c(0,0)) +
@@ -252,7 +259,7 @@ label_rho_s <- sprintf("\"Spearman\" ~ rho == \"%0.3f\"",
 
 df_tpm %>% 
   ggplot(aes(x=log10(`scRNA-seq 1`+1), y=log10(`scRNA-seq 2`+1))) +
-  geom_point(size=0.2, alpha=0.3, pch=16) +
+  geom_point_rast(size=0.2, alpha=0.3, pch=16) +
   geom_abline(linetype='dashed', color='red') +
   annotate("text", x=label_lims[1], y=label_lims[2], label=label_rho_s, 
            size=4, parse=TRUE) +
@@ -269,7 +276,7 @@ label_rho_s <- sprintf("\"Spearman\" ~ rho == \"%0.3f\"",
 
 df_lui_two %>% 
   ggplot(aes(x=`scRNA-seq 1`, y=`scRNA-seq 2`)) +
-  geom_point(size=0.3, alpha=0.4, pch=16) +
+  geom_point_rast(size=0.3, alpha=0.4, pch=16) +
   geom_abline(linetype='dashed', color='red') +
   annotate("text", x=0.25, y=0.95, label=label_rho_s, size=4, parse=TRUE) +
   scale_x_continuous(limits=c(0,1), expand=c(0,0)) +

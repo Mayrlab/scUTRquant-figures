@@ -49,6 +49,7 @@ library(magrittr)
 library(tidyverse)
 library(cowplot)
 library(GGally)
+library(ggrastr)
 ```
 
 # Methods
@@ -70,14 +71,14 @@ import_polyasite <- function(...) {
 
 lower_geom_point_pct <- function (data, mapping, ...) {
   ggplot(data=data, mapping=mapping, ...) +
-    geom_point(size=0.5, alpha=0.5, pch=16, ...) +
+    geom_point_rast(size=0.5, alpha=0.5, pch=16, ...) +
     geom_abline(linetype='dashed', color='red') +
     lims(x=c(0,1), y=c(0,1))
 }
 
 lower_geom_point <- function (data, mapping, ...) {
   ggplot(data=data, mapping=mapping, ...) +
-    geom_point(size=0.5, alpha=0.5, pch=16, ...) +
+    geom_point_rast(size=0.5, alpha=0.5, pch=16, ...) +
     geom_abline(linetype='dashed', color='red')
 }
 ```
@@ -85,29 +86,31 @@ lower_geom_point <- function (data, mapping, ...) {
 # Load Data
 ```{r load_data}
 bleckwehl_samples=c("2i_ESC"="Bleckwehl21", "d2_EB"="Bleckwehl21_EB2", "d4_EB"="Bleckwehl21_EB4")
+guo_samples=c("mESC"="Guo19")
 
 gr_nam <- import_polyasite("data/bed/polyasite/nam14/mESC_WT.bed.gz")
 gr_lackford <- import_polyasite("data/bed/polyasite/lackford14/mESC_WT.bed.gz")
 
-sce_bleckwehl <- readRDS("data/sce/01_filtered.rada-iglesias20.utrome.txs.Rds") %>%
-  `[`(, .$sample %in% names(bleckwehl_samples))
+sce_bleckwehl <- readRDS("data/sce/utrome_mm10_v2/bleckwehl21.txs.Rds") %>%
+  `[`(, .$sample_id %in% names(bleckwehl_samples))
 
-sce_guo <- readRDS("data/sce/01_filtered.guo19.utrome.txs.Rds")
+sce_guo <- readRDS("data/sce/utrome_mm10_v2/guo19.txs.Rds") %>%
+  `[`(, .$sample_id %in% names(guo_samples))
 ```
 
 ## Merge Single Cell
 ```{r merge_sces}
 colData(sce_bleckwehl) %<>% 
-  as_tibble(rownames='cell_id') %>%
-  mutate(sample_id=bleckwehl_samples[sample]) %>%
-  select(cell_id, sample_id) %>%
+  as_tibble %>%
+  mutate(sample_id=bleckwehl_samples[sample_id]) %>%
+  dplyr::select(cell_id, sample_id) %>%
   column_to_rownames("cell_id") %>%
   DataFrame()
 
 colData(sce_guo) %<>%
   as_tibble %>%
-  mutate(sample_id="Guo19") %>%
-  select(cell_id, sample_id) %>%
+  mutate(sample_id=guo_samples[sample_id]) %>%
+  dplyr::select(cell_id, sample_id) %>%
   column_to_rownames("cell_id") %>%
   DataFrame()
 
@@ -120,11 +123,10 @@ sce <- cbind(sce_guo, sce_bleckwehl)
 # Filter to top two non-overlapping UTRs
 df_utr2 <- rowData(sce) %>%
   as_tibble %>%
-  select(transcript_id, gene_id, gene_symbol, is_ipa, atlas.utr_type, is_blacklisted) %>%
+  dplyr::select(transcript_id, gene_id, gene_name, is_ipa, utr_type_no_ipa) %>%
   mutate(total_umis=rowSums(counts(sce)),
          tpm=total_umis*1e6/sum(total_umis, na.rm=TRUE)) %>%
-  #filter(!is_ipa, total_umis > 0) %>%
-  filter(!is_ipa, atlas.utr_type == 'multi', !is_blacklisted) %>%
+  filter(!is_ipa, utr_type_no_ipa == 'multi') %>%
   group_by(gene_id) %>%
   filter(dplyr::n() > 1) %>%
   mutate(utr_rank=row_number(-total_umis)) %>%
@@ -132,11 +134,12 @@ df_utr2 <- rowData(sce) %>%
   filter(utr_rank %in% 1:2)
 
 idx_utr2 <- rowRanges(sce)[df_utr2$transcript_id,] %>%
+  unlist() %>%
   join_overlap_self_directed() %>%
   filter(transcript_id != transcript_id.overlap) %>%
   { filter(df_utr2, !(transcript_id %in% .$transcript_id)) } %>%
   group_by(gene_id) %>%
-  filter(n() == 2) %>%
+  filter(dplyr::n() == 2) %>%
   ungroup() %$%
   transcript_id
 ```
@@ -147,29 +150,29 @@ idx_utr2 <- rowRanges(sce)[df_utr2$transcript_id,] %>%
 df_nam <- gr_nam %>%
   anchor_center() %>%
   mutate(width=50) %>% 
-  join_overlap_intersect_directed(x=rowRanges(sce)[idx_utr2,]) %>%
+  join_overlap_intersect_directed(x=unlist(rowRanges(sce)[idx_utr2,])) %>%
   group_by(transcript_id) %>%
   summarise(tpm=sum(tpm, na.rm=TRUE)) %>%
   as_tibble() %>%
-  rename(Nam14=tpm)
+  dplyr::rename(Nam14=tpm)
 
 df_lackford <- gr_lackford %>%
   anchor_center() %>%
   mutate(width=50) %>% 
-  join_overlap_intersect_directed(x=rowRanges(sce)[idx_utr2,]) %>%
+  join_overlap_intersect_directed(x=unlist(rowRanges(sce)[idx_utr2,])) %>%
   group_by(transcript_id) %>%
   summarise(tpm=sum(tpm, na.rm=TRUE)) %>%
   as_tibble() %>%
-  rename(Lackford14=tpm)
+  dplyr::rename(Lackford14=tpm)
 ```
 
 ## Compute Single-Cell
 ```{r compute_sc_tpm}
 M_samples <- fac2sparse(sce$sample_id) %>% t
 
-cts <- assay(sce, 'normcounts') %*% M_samples
+cts <- assay(sce, 'counts') %*% M_samples
 
-df_sc <- (cts %*% Diagonal(ncol(cts), 1e6/colSums(cts))) %>% 
+df_sc <- (cts %*% Diagonal(ncol(cts), 1e6/colSums(cts), names=TRUE)) %>% 
   `[`(idx_utr2, , drop=FALSE) %>% 
   as.matrix %>% 
   as_tibble(rownames='transcript_id')
@@ -185,7 +188,6 @@ df_tpm <- df_sc %>%
             by='transcript_id') %>%
   select(transcript_id, gene_id, utr_rank, total_umis, everything())
 
-N_SAMPLES=ncol(df_tpm) - 5
 SAMPLE_COLS=c("Nam14", "Lackford14", "Guo19", "Bleckwehl21")
 #SAMPLE_COLS=c("Nam14", "Lackford14", "Guo19", "Bleckwehl21", "Bleckwehl21_EB2", "Bleckwehl21_EB4")
 MIN_TPM=0
@@ -197,7 +199,7 @@ df_tpm_min <- df_tpm %>%
   ungroup() %>%
   pivot_wider(names_from='sample', values_from='tpm') %>%
   group_by(gene_id) %>%
-  filter(n() == 2) %>%
+  filter(dplyr::n() == 2) %>%
   ungroup()
 ```
 
@@ -230,58 +232,6 @@ df_tpm_min %>%
   theme_bw()
 ```
 
-## LUI
-### Compute
-```{r compute_lui}
-df_lui <- df_tpm %>% 
-  pivot_longer(all_of(SAMPLE_COLS), names_to='sample', values_to="tpm") %>%
-  group_by(gene_id, sample) %>%
-  mutate(lui=tpm/sum(tpm, na.rm=TRUE),
-         utr_pos=row_number(as.integer(str_extract(transcript_id,
-                                                   "[^.]+$")))) %>%
-  filter(utr_pos == max(utr_pos)) %>% 
-  ungroup() %>%
-  select(gene_id, sample, lui) %>%
-  pivot_wider(names_from='sample', values_from='lui')
-
-df_lui_min <- df_tpm_min %>% 
-  pivot_longer(all_of(SAMPLE_COLS), names_to='sample', values_to="tpm") %>%
-  group_by(gene_id, sample) %>%
-  mutate(lui=tpm/sum(tpm, na.rm=TRUE),
-         utr_pos=row_number(as.integer(str_extract(transcript_id,
-                                                   "[^.]+$")))) %>%
-  filter(utr_pos == max(utr_pos)) %>% 
-  ungroup() %>%
-  select(gene_id, sample, lui) %>%
-  pivot_wider(names_from='sample', values_from='lui')
-
-SAMPLE_COLS_LUI=seq(2, ncol(df_lui))
-```
-
-### Plot All Multi-UTR
-```{r plot_all_lui, fig.width=10, fig.height=8, warning=FALSE}
-df_lui %>%
-  ggpairs(columns=SAMPLE_COLS_LUI, progress=FALSE,
-          lower=list(continuous=wrap(lower_geom_point_pct, alpha=0.4)),
-          upper=list(continuous=wrap('cor', method="spearman"))) +
-          ##lower=list(continuous=wrap("points", alpha=0.3, size=0.1))) +
-  labs(x="LUI", y="LUI") +
-  theme_bw()
-```
-
-### Plot Two-UTR
-```{r plot_all_lui_twoutr, fig.width=10, fig.height=8, warning=FALSE}
-df_lui_min %>%
-  ggpairs(columns=SAMPLE_COLS_LUI, progress=FALSE,
-          lower=list(continuous=wrap(lower_geom_point_pct, alpha=0.4)),
-          upper=list(continuous=wrap('cor', method="spearman"))) +
-          ##lower=list(continuous=wrap("points", alpha=0.3, size=0.1))) +
-  labs(x="LUI", y="LUI") +
-  theme_bw()
-
-ggsave("output/figure2/ed2h-mescs-all-lui-two-utr.pdf", width=6, height=6, dpi=300)
-```
-
 # Exported Figures
 ## Bulk Compare
 ### TPM
@@ -295,7 +245,7 @@ label_lims <- axis_lims %>% { . + c(0.25*(.[2]-.[1]), 0.05*(.[1]-.[2])) }
 
 df_tpm %>% 
   ggplot(aes(x=log10(Lackford14+1), y=log10(Nam14+1))) +
-  geom_point(size=0.3, alpha=0.4, pch=16) +
+  geom_point_rast(size=0.3, alpha=0.4, pch=16) +
   geom_abline(linetype='dashed', color='red') +
   annotate("text", x=label_lims[1], y=label_lims[2], label=label_rho_s, 
            size=4, parse=TRUE) +
@@ -305,26 +255,6 @@ df_tpm %>%
   theme(plot.margin=grid::unit(c(4,8,4,4), "mm"), aspect.ratio=1)
 
 ggsave("output/figure2/fig2g-mescs-bulk-bulk-tpm.pdf", width=5, height=4)
-```
-
-### LUI
-
-```{r fig_bulk_lui, fig.width=5, fig.height=4}
-label_rho_s <- sprintf("\"Spearman\" ~ rho == \"%0.3f\"", 
-                       cor(df_lui_min$Nam14, df_lui_min$Lackford14, method='spearman'))
-
-df_lui_min %>% 
-  ggplot(aes(x=Lackford14, y=Nam14)) +
-  geom_point(size=0.4, alpha=0.5, pch=16) +
-  geom_abline(linetype='dashed', color='red') +
-  annotate("text", x=0.25, y=0.95, label=label_rho_s, size=4, parse=TRUE) +
-  scale_x_continuous(limits=c(0,1), expand=c(0,0)) +
-  scale_y_continuous(limits=c(0,1), expand=c(0,0)) +
-  labs(x="Bulk - Lackford14 [LUI]", y="Bulk - Nam14 [LUI]") +
-  theme_bw() +
-  theme(plot.margin=grid::unit(c(4,8,4,4), "mm"), aspect.ratio=1)
-
-ggsave("output/figure2/fig2j-mesc-bulk-bulk-lui-two-utr.pdf", width=5, height=4)
 ```
 
 ## Bulk vs scRNA-seq
@@ -339,7 +269,7 @@ label_rho_s <- sprintf("\"Spearman\" ~ rho == \"%0.3f\"",
 
 df_tpm %>% 
   ggplot(aes(x=log10(Lackford14+1), y=log10(Bleckwehl21+1))) +
-  geom_point(size=0.3, alpha=0.4, pch=16) +
+  geom_point_rast(size=0.3, alpha=0.4, pch=16) +
   geom_abline(linetype='dashed', color='red') +
   annotate("text", x=label_lims[1], y=label_lims[2], label=label_rho_s, 
            size=4, parse=TRUE) +
@@ -349,26 +279,6 @@ df_tpm %>%
   theme(plot.margin=grid::unit(c(4,8,4,4), "mm"), aspect.ratio=1)
 
 ggsave("output/figure2/fig2h-mescs-bulk-sc-tpm.pdf", width=5, height=4)
-```
-
-### LUI
-
-```{r fig_compare_lui, fig.width=5, fig.height=4}
-label_rho_s <- sprintf("\"Spearman\" ~ rho == \"%0.3f\"", 
-                       cor(df_lui_min$Lackford14, df_lui_min$Bleckwehl21, method='spearman'))
-
-df_lui_min %>% 
-  ggplot(aes(x=Lackford14, y=Bleckwehl21)) +
-  geom_point(size=0.4, alpha=0.5, pch=16) +
-  geom_abline(linetype='dashed', color='red') +
-  annotate("text", x=0.25, y=0.95, label=label_rho_s, size=4, parse=TRUE) +
-  scale_x_continuous(limits=c(0,1), expand=c(0,0)) +
-  scale_y_continuous(limits=c(0,1), expand=c(0,0)) +
-  labs(x="Bulk - Lackford14 [LUI]", y="scRNA-seq - Bleckwehl21 [LUI]") +
-  theme_bw() +
-  theme(plot.margin=grid::unit(c(4,8,4,4), "mm"), aspect.ratio=1)
-
-ggsave("output/figure2/fig2k-mesc-bulk-sc-lui-two-utr.pdf", width=5, height=4)
 ```
 
 ## scRNA-seq Compare
@@ -383,7 +293,7 @@ label_lims <- axis_lims %>% { . + c(0.25*(.[2]-.[1]), 0.05*(.[1]-.[2])) }
 
 df_tpm %>% 
   ggplot(aes(x=log10(Guo19+1), y=log10(Bleckwehl21+1))) +
-  geom_point(size=0.2, alpha=0.3, pch=16) +
+  geom_point_rast(size=0.2, alpha=0.3, pch=16) +
   geom_abline(linetype='dashed', color='red') +
   annotate("text", x=label_lims[1], y=label_lims[2], label=label_rho_s, size=4, parse=TRUE) +
   scale_x_continuous(limits=axis_lims) + scale_y_continuous(limits=axis_lims) +
@@ -392,26 +302,6 @@ df_tpm %>%
   theme(plot.margin=grid::unit(c(4,8,4,4), "mm"), aspect.ratio=1)
 
 ggsave("output/figure2/fig2i-mescs-sc-sc-tpm.pdf", width=5, height=4)
-```
-
-### LUI
-
-```{r fig_sc_lui, fig.width=5, fig.height=4}
-label_rho_s <- sprintf("\"Spearman\" ~ rho == \"%0.3f\"", 
-                       cor(df_lui_min$Guo19, df_lui_min$Bleckwehl21, method='spearman'))
-
-df_lui_min %>% 
-  ggplot(aes(x=Guo19, y=Bleckwehl21)) +
-  geom_point(size=0.4, alpha=0.5, pch=16) +
-  geom_abline(linetype='dashed', color='red') +
-  annotate("text", x=0.25, y=0.95, label=label_rho_s, size=4, parse=TRUE) +
-  scale_x_continuous(limits=c(0,1), expand=c(0,0)) +
-  scale_y_continuous(limits=c(0,1), expand=c(0,0)) +
-  labs(x="scRNA-seq - Guo19 [LUI]", y="scRNA-seq - Bleckwehl21 [LUI]") +
-  theme_bw() +
-  theme(plot.margin=grid::unit(c(4,8,4,4), "mm"), aspect.ratio=1)
-
-ggsave("output/figure2/fig2l-mesc-sc-sc-lui-two-utr.pdf", width=5, height=4)
 ```
 
 
