@@ -111,8 +111,6 @@ ggplot(df_nipa, aes(x=n_ipa_label)) +
   labs(x="IPA Isoform Count", y="Number of Genes") +
   guides(fill=FALSE) +
   theme_minimal_hgrid()
-
-ggsave("output/figure3/ed3b-n-ipa-isoforms-pct05.mouse.pdf", width=4, height=4, dpi=300)
 ```
 
 ## IPA - 10% Cell Type

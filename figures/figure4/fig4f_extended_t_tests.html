@@ -11,7 +11,7 @@
 
 <meta name="author" content="Mervin M Fansler" />
 
-<meta name="date" content="2023-05-23" />
+<meta name="date" content="2023-05-30" />
 
 <title>Expanded Cell Types - DGE Tests</title>
 
@@ -1575,7 +1575,7 @@ border-radius: 0px;
 
 <h1 class="title toc-ignore">Expanded Cell Types - DGE Tests</h1>
 <h4 class="author">Mervin M Fansler</h4>
-<h4 class="date">23 May 2023</h4>
+<h4 class="date">30 May 2023</h4>
 
 </div>
 
@@ -1680,7 +1680,7 @@ sce &lt;- logNormCounts(sce)</code></pre>
 <h1>Two-Sample Tests</h1>
 <pre class="r"><code>res &lt;- bplapply(test_pairs, function (p) {
   findMarkers(sce, groups=sce$celltype_label, restrict=p) %&gt;%
-    `[[`(1) %&gt;%
+    `[[`(p[[2]]) %&gt;%
     as_tibble(rownames=&quot;gene_id&quot;) %&gt;%
     dplyr::rename(pval=p.value, qval=FDR, log2FC=summary.logFC) %&gt;%
     mutate(start=p[[1]], end=p[[2]]) %&gt;%
@@ -1716,15 +1716,6 @@ df_tests %&gt;% arrange(pval, log2FC) %&gt;% head(50) %&gt;% knitr::kable()</cod
 </thead>
 <tbody>
 <tr class="odd">
-<td align="left">Plp1</td>
-<td align="left">ENSMUSG00000031425.15</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-7.422936</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
 <td align="left">Dppa5a</td>
 <td align="left">ENSMUSG00000060461.5</td>
 <td align="left">mESC</td>
@@ -1733,43 +1724,7 @@ df_tests %&gt;% arrange(pval, log2FC) %&gt;% head(50) %&gt;% knitr::kable()</cod
 <td align="right">0</td>
 <td align="right">0</td>
 </tr>
-<tr class="odd">
-<td align="left">Cnp</td>
-<td align="left">ENSMUSG00000006782.16</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-5.639468</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
 <tr class="even">
-<td align="left">Cryab</td>
-<td align="left">ENSMUSG00000032060.10</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-5.528543</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
-<td align="left">Trf</td>
-<td align="left">ENSMUSG00000032554.15</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-5.445947</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
-<td align="left">Cldn11</td>
-<td align="left">ENSMUSG00000037625.7</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-5.380010</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
 <td align="left">Mgp</td>
 <td align="left">ENSMUSG00000030218.2</td>
 <td align="left">TraMes</td>
@@ -1778,75 +1733,12 @@ df_tests %&gt;% arrange(pval, log2FC) %&gt;% head(50) %&gt;% knitr::kable()</cod
 <td align="right">0</td>
 <td align="right">0</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Pola2</td>
 <td align="left">ENSMUSG00000024833.15</td>
 <td align="left">mESC</td>
 <td align="left">MEF</td>
 <td align="right">-5.310404</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
-<td align="left">Car2</td>
-<td align="left">ENSMUSG00000027562.12</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-5.285888</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
-<td align="left">Ptgds</td>
-<td align="left">ENSMUSG00000015090.13</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-4.995498</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
-<td align="left">Gatm</td>
-<td align="left">ENSMUSG00000027199.14</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-4.877830</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
-<td align="left">Mpo</td>
-<td align="left">ENSMUSG00000009350.13</td>
-<td align="left">HSC</td>
-<td align="left">Mono</td>
-<td align="right">-4.649268</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
-<td align="left">Plac8</td>
-<td align="left">ENSMUSG00000029322.12</td>
-<td align="left">HSC</td>
-<td align="left">Mono</td>
-<td align="right">-4.647214</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
-<td align="left">Mal</td>
-<td align="left">ENSMUSG00000027375.14</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-4.622426</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
-<td align="left">Mbp</td>
-<td align="left">ENSMUSG00000041607.17</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-4.551759</td>
 <td align="right">0</td>
 <td align="right">0</td>
 </tr>
@@ -1869,60 +1761,6 @@ df_tests %&gt;% arrange(pval, log2FC) %&gt;% head(50) %&gt;% knitr::kable()</cod
 <td align="right">0</td>
 </tr>
 <tr class="even">
-<td align="left">Csrp1</td>
-<td align="left">ENSMUSG00000026421.14</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-4.390347</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
-<td align="left">Apod</td>
-<td align="left">ENSMUSG00000022548.14</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-4.368362</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
-<td align="left">Fth1</td>
-<td align="left">ENSMUSG00000024661.7</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-4.321565</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
-<td align="left">Mobp</td>
-<td align="left">ENSMUSG00000032517.16</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-4.248868</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
-<td align="left">Dbndd2</td>
-<td align="left">ENSMUSG00000017734.15</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-4.245249</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
-<td align="left">Septin4</td>
-<td align="left">ENSMUSG00000020486.19</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-4.189197</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
 <td align="left">Bgn</td>
 <td align="left">ENSMUSG00000031375.17</td>
 <td align="left">TraMes</td>
@@ -1941,11 +1779,11 @@ df_tests %&gt;% arrange(pval, log2FC) %&gt;% head(50) %&gt;% knitr::kable()</cod
 <td align="right">0</td>
 </tr>
 <tr class="even">
-<td align="left">Mag</td>
-<td align="left">ENSMUSG00000036634.15</td>
+<td align="left">Atp1b1</td>
+<td align="left">ENSMUSG00000026576.12</td>
 <td align="left">mNeur</td>
 <td align="left">ODC</td>
-<td align="right">-4.054162</td>
+<td align="right">-3.961045</td>
 <td align="right">0</td>
 <td align="right">0</td>
 </tr>
@@ -1968,29 +1806,11 @@ df_tests %&gt;% arrange(pval, log2FC) %&gt;% head(50) %&gt;% knitr::kable()</cod
 <td align="right">0</td>
 </tr>
 <tr class="odd">
-<td align="left">Qdpr</td>
-<td align="left">ENSMUSG00000015806.12</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-3.934348</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
 <td align="left">Atp1b1</td>
 <td align="left">ENSMUSG00000026576.12</td>
 <td align="left">mNeur</td>
 <td align="left">endo</td>
 <td align="right">-3.883059</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
-<td align="left">Mog</td>
-<td align="left">ENSMUSG00000076439.12</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-3.860546</td>
 <td align="right">0</td>
 <td align="right">0</td>
 </tr>
@@ -2013,29 +1833,11 @@ df_tests %&gt;% arrange(pval, log2FC) %&gt;% head(50) %&gt;% knitr::kable()</cod
 <td align="right">0</td>
 </tr>
 <tr class="even">
-<td align="left">Pllp</td>
-<td align="left">ENSMUSG00000031775.5</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-3.728816</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
 <td align="left">Cytl1</td>
 <td align="left">ENSMUSG00000062329.4</td>
 <td align="left">TraMes</td>
 <td align="left">TraEpi</td>
 <td align="right">-3.725979</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
-<td align="left">Ctsg</td>
-<td align="left">ENSMUSG00000040314.2</td>
-<td align="left">HSC</td>
-<td align="left">Mono</td>
-<td align="right">-3.725047</td>
 <td align="right">0</td>
 <td align="right">0</td>
 </tr>
@@ -2049,15 +1851,6 @@ df_tests %&gt;% arrange(pval, log2FC) %&gt;% head(50) %&gt;% knitr::kable()</cod
 <td align="right">0</td>
 </tr>
 <tr class="even">
-<td align="left">Tubb4a</td>
-<td align="left">ENSMUSG00000062591.5</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-3.695726</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
 <td align="left">Mt2</td>
 <td align="left">ENSMUSG00000031762.7</td>
 <td align="left">mESC</td>
@@ -2066,61 +1859,7 @@ df_tests %&gt;% arrange(pval, log2FC) %&gt;% head(50) %&gt;% knitr::kable()</cod
 <td align="right">0</td>
 <td align="right">0</td>
 </tr>
-<tr class="even">
-<td align="left">Glul</td>
-<td align="left">ENSMUSG00000026473.16</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-3.660866</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
 <tr class="odd">
-<td align="left">Opalin</td>
-<td align="left">ENSMUSG00000050121.9</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-3.653791</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
-<td align="left">Dbi</td>
-<td align="left">ENSMUSG00000026385.16</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-3.511611</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
-<td align="left">Ppp1r14a</td>
-<td align="left">ENSMUSG00000037166.5</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-3.506233</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
-<td align="left">H2-K1</td>
-<td align="left">ENSMUSG00000061232.16</td>
-<td align="left">Timm</td>
-<td align="left">TSpleen</td>
-<td align="right">-3.435375</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
-<td align="left">Olig1</td>
-<td align="left">ENSMUSG00000046160.6</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-3.409339</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="even">
 <td align="left">Cd3g</td>
 <td align="left">ENSMUSG00000002033.14</td>
 <td align="left">TSpleen</td>
@@ -2129,7 +1868,7 @@ df_tests %&gt;% arrange(pval, log2FC) %&gt;% head(50) %&gt;% knitr::kable()</cod
 <td align="right">0</td>
 <td align="right">0</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left">Rps27</td>
 <td align="left">ENSMUSG00000090733.6</td>
 <td align="left">mESC</td>
@@ -2138,21 +1877,12 @@ df_tests %&gt;% arrange(pval, log2FC) %&gt;% head(50) %&gt;% knitr::kable()</cod
 <td align="right">0</td>
 <td align="right">0</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left">Chchd10</td>
 <td align="left">ENSMUSG00000049422.7</td>
 <td align="left">mESC</td>
 <td align="left">MEF</td>
 <td align="right">-3.337716</td>
-<td align="right">0</td>
-<td align="right">0</td>
-</tr>
-<tr class="odd">
-<td align="left">Stmn4</td>
-<td align="left">ENSMUSG00000022044.14</td>
-<td align="left">mNeur</td>
-<td align="left">ODC</td>
-<td align="right">-3.334891</td>
 <td align="right">0</td>
 <td align="right">0</td>
 </tr>
@@ -2162,6 +1892,276 @@ df_tests %&gt;% arrange(pval, log2FC) %&gt;% head(50) %&gt;% knitr::kable()</cod
 <td align="left">OPC</td>
 <td align="left">ODC</td>
 <td align="right">-3.301860</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Atp1b1</td>
+<td align="left">ENSMUSG00000026576.12</td>
+<td align="left">mNeur</td>
+<td align="left">Astro</td>
+<td align="right">-3.288994</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Pcp4</td>
+<td align="left">ENSMUSG00000090223.2</td>
+<td align="left">mNeur</td>
+<td align="left">ODC</td>
+<td align="right">-3.229594</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Pcp4</td>
+<td align="left">ENSMUSG00000090223.2</td>
+<td align="left">mNeur</td>
+<td align="left">endo</td>
+<td align="right">-3.203496</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Cd3d</td>
+<td align="left">ENSMUSG00000032094.8</td>
+<td align="left">TSpleen</td>
+<td align="left">BSpleen</td>
+<td align="right">-3.178143</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Serpine2</td>
+<td align="left">ENSMUSG00000026249.10</td>
+<td align="left">OPC</td>
+<td align="left">ODC</td>
+<td align="right">-3.162330</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Ankfy1</td>
+<td align="left">ENSMUSG00000020790.14</td>
+<td align="left">mESC</td>
+<td align="left">MEF</td>
+<td align="right">-3.154598</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Sacs</td>
+<td align="left">ENSMUSG00000048279.19</td>
+<td align="left">mESC</td>
+<td align="left">MEF</td>
+<td align="right">-3.127874</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Pcp4</td>
+<td align="left">ENSMUSG00000090223.2</td>
+<td align="left">mNeur</td>
+<td align="left">MG</td>
+<td align="right">-3.112157</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Cst3</td>
+<td align="left">ENSMUSG00000027447.6</td>
+<td align="left">TraMes</td>
+<td align="left">TraEpi</td>
+<td align="right">-3.109416</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Gsn</td>
+<td align="left">ENSMUSG00000026879.14</td>
+<td align="left">TraMes</td>
+<td align="left">TraEpi</td>
+<td align="right">-3.106973</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Ptk6</td>
+<td align="left">ENSMUSG00000038751.5</td>
+<td align="left">mESC</td>
+<td align="left">MEF</td>
+<td align="right">-3.103641</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Pcp4</td>
+<td align="left">ENSMUSG00000090223.2</td>
+<td align="left">mNeur</td>
+<td align="left">Astro</td>
+<td align="right">-3.087194</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Gm9780</td>
+<td align="left">ENSMUSG00000094800.8</td>
+<td align="left">TraMes</td>
+<td align="left">TraEpi</td>
+<td align="right">-3.067142</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Dcn</td>
+<td align="left">ENSMUSG00000019929.16</td>
+<td align="left">TraMes</td>
+<td align="left">TraEpi</td>
+<td align="right">-3.064664</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Ckb</td>
+<td align="left">ENSMUSG00000001270.9</td>
+<td align="left">mESC</td>
+<td align="left">MEF</td>
+<td align="right">-3.057459</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Calm2</td>
+<td align="left">ENSMUSG00000036438.14</td>
+<td align="left">mNeur</td>
+<td align="left">Astro</td>
+<td align="right">-3.046450</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Tmsb4x</td>
+<td align="left">ENSMUSG00000049775.16</td>
+<td align="left">HSC</td>
+<td align="left">Ery</td>
+<td align="right">-3.006816</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Ifitm1</td>
+<td align="left">ENSMUSG00000025491.14</td>
+<td align="left">HSC</td>
+<td align="left">Ery</td>
+<td align="right">-2.993672</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Ptprz1</td>
+<td align="left">ENSMUSG00000068748.7</td>
+<td align="left">OPC</td>
+<td align="left">ODC</td>
+<td align="right">-2.986608</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Snap25</td>
+<td align="left">ENSMUSG00000027273.13</td>
+<td align="left">mNeur</td>
+<td align="left">endo</td>
+<td align="right">-2.982556</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Snap25</td>
+<td align="left">ENSMUSG00000027273.13</td>
+<td align="left">mNeur</td>
+<td align="left">ODC</td>
+<td align="right">-2.973422</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Bex1</td>
+<td align="left">ENSMUSG00000050071.8</td>
+<td align="left">mESC</td>
+<td align="left">MEF</td>
+<td align="right">-2.969976</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Snap25</td>
+<td align="left">ENSMUSG00000027273.13</td>
+<td align="left">mNeur</td>
+<td align="left">MG</td>
+<td align="right">-2.946407</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Mt1</td>
+<td align="left">ENSMUSG00000031765.8</td>
+<td align="left">mESC</td>
+<td align="left">MEF</td>
+<td align="right">-2.943985</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Snap25</td>
+<td align="left">ENSMUSG00000027273.13</td>
+<td align="left">mNeur</td>
+<td align="left">Astro</td>
+<td align="right">-2.925802</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Col1a2</td>
+<td align="left">ENSMUSG00000029661.16</td>
+<td align="left">TraMes</td>
+<td align="left">TraEpi</td>
+<td align="right">-2.906284</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Car2</td>
+<td align="left">ENSMUSG00000027562.12</td>
+<td align="left">HSC</td>
+<td align="left">Mono</td>
+<td align="right">-2.888105</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Wif1</td>
+<td align="left">ENSMUSG00000020218.11</td>
+<td align="left">TraMes</td>
+<td align="left">TraEpi</td>
+<td align="right">-2.887400</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">Klf2</td>
+<td align="left">ENSMUSG00000055148.7</td>
+<td align="left">mESC</td>
+<td align="left">MEF</td>
+<td align="right">-2.877939</td>
+<td align="right">0</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">Fn1</td>
+<td align="left">ENSMUSG00000026193.15</td>
+<td align="left">TraMes</td>
+<td align="left">TraEpi</td>
+<td align="right">-2.856280</td>
 <td align="right">0</td>
 <td align="right">0</td>
 </tr>

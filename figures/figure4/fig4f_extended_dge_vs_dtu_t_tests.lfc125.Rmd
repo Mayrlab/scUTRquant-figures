@@ -27,11 +27,29 @@ library(cowplot)
 ## Parameters
 ```{r set_params}
 MAX_QVAL=0.05
-MIN_L2FC=log2(1.5)
+MIN_L2FC=log2(1.25)
 MIN_DWUI=0.10
 
 TEST_DTU="data/dtu/20230523-diff-pairwise-wui-tests.min50.boot10k.tsv.gz"
 TEST_DGE="data/dge/20230530-diff-pairwise-t-tests.tsv.gz"
+
+test_lbl_lvls <- c("MEF vs mESC",
+                   "ODC vs mNeur",
+                   "MG vs mNeur",
+                   "Ery vs HSC",
+                   "endo vs mNeur",
+                   "Astro vs mNeur",
+                   "ODC vs OPC",
+                   "Mono vs HSC",
+                   "Neutro vs HSC",
+                   "TraEpi vs TraMes",
+                   "TSpleen vs Timm",
+                   "basMamm vs lumMamm",
+                   "TMamm vs TSpleen", 
+                   "mNeur vs imNeur",
+                   "Baso vs HSC",
+                   "BSpleen vs TSpleen",
+                   "NeurEC vs mNeur")
 ```
 
 # Data
@@ -58,7 +76,7 @@ df_sig_all <- full_join(df_sig_dtu, df_sig_dge, by=c("gene_id", "start", "end"))
                     ifelse(sig_isoform, "DTU", 
                            ifelse(sig_gene, "DGE", "NS"))),
          sig=factor(sig, levels=c("NS", "DTU", "Both", "DGE")),
-         test_label=str_c(end, " vs ", start))
+         test_label=fct(str_c(end, " vs ", start), levels=test_lbl_lvls))
 
 df_sig_multi <- left_join(df_sig_dtu, df_sig_dge, by=c("gene_id", "start", "end")) %>%
   replace_na(list(sig_isoform=FALSE, sig_gene=FALSE)) %>%
@@ -66,7 +84,7 @@ df_sig_multi <- left_join(df_sig_dtu, df_sig_dge, by=c("gene_id", "start", "end"
                     ifelse(sig_isoform, "DTU",
                            ifelse(sig_gene, "DGE", "NS"))),
          sig=factor(sig, levels=c("NS", "DTU", "Both", "DGE")),
-         test_label=str_c(end, " vs ", start))
+         test_label=fct(str_c(end, " vs ", start), levels=test_lbl_lvls))
 ```
 
 # All Genes
@@ -77,7 +95,6 @@ colvals_ns <- c(NS="#CCCCCC", DTU="#EEE643", Both="#2E9F72", DGE="#2170B1") %>% 
 }
 
 df_sig_all %>%
-  mutate(test_label=fct_reorder(test_label, sig, . %>% { sum(. != "NS") }, .desc=TRUE)) %>%
   ggplot(aes(x=test_label, fill=sig)) +
   geom_bar(position='stack', color='black', size=0.1) +
   scale_fill_manual(breaks=names(colvals_ns), values=colvals_ns) +
@@ -86,7 +103,7 @@ df_sig_all %>%
   labs(x="Compared Cell Types", y="All Tested Genes", fill="Difference") +
   theme_bw()
 
-ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-all-ns.pdf", width=6, height=5, dpi=300)
+ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-all-ns.lfc125.pdf", width=6, height=5, dpi=300)
 ```
 
 ## Plot Positive
@@ -97,7 +114,7 @@ colvals <- c(DTU="#EEE643", Both="#2E9F72", DGE="#2170B1") %>% {
 
 df_sig_all %>%
   filter(sig != "NS") %>%
-  ggplot(aes(x=fct_infreq(test_label), fill=sig)) +
+  ggplot(aes(x=test_label, fill=sig)) +
   geom_bar(position='stack', color='black', size=0.1) +
   scale_fill_manual(values=colvals) +
   scale_x_discrete(guide=guide_axis(angle=45)) +
@@ -105,7 +122,7 @@ df_sig_all %>%
   labs(x="Compared Cell Types", y="Significant Genes", fill="Difference") +
   theme_bw()
 
-ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-all.pdf", width=6, height=5, dpi=300)
+ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-all.lfc125.pdf", width=6, height=5, dpi=300)
 ```
 
 ## Table 
@@ -130,7 +147,7 @@ knitr::kable(df_wide_all)
 
 ## Export Table
 ```{r export_tbl_all}
-write_xlsx(df_wide_all, "output/tables/sup-tbl3-extended-celltypes-chisq-results-t-tests-all.xlsx")
+write_xlsx(df_wide_all, "output/tables/sup-tbl3-extended-celltypes-chisq-results-t-tests-all.lfc125.xlsx")
 ```
 
 # Multi-UTR Genes
@@ -138,7 +155,7 @@ write_xlsx(df_wide_all, "output/tables/sup-tbl3-extended-celltypes-chisq-results
 ```{r plot_multi, fig.width=6, fig.height=5}
 df_sig_multi %>%
   filter(sig != "NS") %>%
-  ggplot(aes(x=fct_infreq(test_label), fill=sig)) +
+  ggplot(aes(x=test_label, fill=sig)) +
   geom_bar(position='stack', color='black', size=0.1) +
   scale_fill_manual(breaks=names(colvals), values=colvals) +
   scale_x_discrete(guide=guide_axis(angle=45)) +
@@ -147,7 +164,7 @@ df_sig_multi %>%
        fill="Difference") +
   theme_bw()
 
-ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-multi.pdf", width=6, height=5, dpi=300)
+ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-multi.lfc125.pdf", width=6, height=5, dpi=300)
 ```
 
 ## Plot All
@@ -157,7 +174,6 @@ colvals_ns <- c(NS="#CCCCCC", DTU="#EEE643", Both="#2E9F72", DGE="#2170B1") %>% 
 }
 
 df_sig_multi %>%
-  mutate(test_label=fct_reorder(test_label, sig, . %>% { sum(.=="DTU") }, .desc=TRUE)) %>%
   ggplot(aes(x=test_label, fill=sig)) +
   geom_bar(position='stack', color='black', size=0.1) +
   scale_fill_manual(breaks=names(colvals_ns), values=colvals_ns) +
@@ -167,7 +183,7 @@ df_sig_multi %>%
        fill="Difference") +
   theme_bw()
 
-ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-multi-ns.pdf", width=6, height=5, dpi=300)
+ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-multi-ns.lfc125.pdf", width=6, height=5, dpi=300)
 ```
 
 ## Table 
@@ -223,54 +239,7 @@ knitr::kable(df_wide)
 
 ## Export Table
 ```{r export_tbl}
-write_xlsx(df_wide, "output/tables/tbl3-extended-celltypes-chisq-results-t-tests.xlsx")
-```
-
-# Correlation Analysis
-```{r plot_correlations, fig.width=6, fig.height=3}
-test_lbl_lvls <- c("MEF vs mESC",
-                   "ODC vs mNeur",
-                   "MG vs mNeur",
-                   "Ery vs HSC",
-                   "endo vs mNeur",
-                   "Astro vs mNeur",
-                   "ODC vs OPC",
-                   "Mono vs HSC",
-                   "Neutro vs HSC",
-                   "TraEpi vs TraMes",
-                   "TSpleen vs Timm",
-                   "basMamm vs lumMamm",
-                   "TMamm vs TSpleen", 
-                   "mNeur vs imNeur",
-                   "Baso vs HSC",
-                   "BSpleen vs TSpleen",
-                   "NeurEC vs mNeur")
-
-df_corrs <- left_join(
-  mutate(df_dtu, test_label=str_c(end, " vs ", start), start=NULL, end=NULL),
-  mutate(df_dge, test_label=str_c(end, " vs ", start), start=NULL, end=NULL),
-  by=c("gene_symbol", "gene_id", "test_label"), suffix=c("_dtu", "_dge")) %>%
-  mutate(test_label=fct(test_label, levels=test_lbl_lvls)) %>%
-  group_by(test_label) %>%
-  group_modify(~ broom::tidy(cor.test(.x$stat, .x$log2FC, method="pearson")))
-
-df_corrs %>%
-  ggplot(aes(x=test_label)) +
-  geom_hline(yintercept=0, linetype='dashed', linewidth=0.2) +
-  geom_errorbar(aes(ymin=conf.low, ymax=conf.high), 
-                linewidth=0.5, width=0.5, color='grey60') +
-  geom_point(aes(y=estimate), size=2, color='grey40') +
-  scale_x_discrete(guide=guide_axis(angle=90)) +
-  scale_y_continuous(limits=c(-0.3,0.3)) +
-  labs(x=NULL, y="Pearson Correlation\nlog2(FC) ~ dWUI") +
-  theme_bw()
-
-ggsave("output/figure4/sup3f-celltypes-l2fc-dwui-corrs-multi.pdf", width=6, height=3, dpi=300)
-```
-
-## Export Table
-```{r export_tbl_corrs}
-write_xlsx(df_corrs, "output/tables/tbl3b-extended-celltypes-corrs-results.xlsx")
+write_xlsx(df_wide, "output/tables/tbl3-extended-celltypes-chisq-results-t-tests.lfc125.xlsx")
 ```
 
 ---

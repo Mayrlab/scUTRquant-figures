@@ -55,7 +55,13 @@ sce <- readRDS("data/sce/hspcs.txs.full_annot.Rds")
 ## Preprocessing
 ```{r prepare_data}
 sce %<>% `[`(!rowData(.)$is_blacklisted,)
-idx_multi <- rowData(sce)$atlas.utr_type == 'multi'
+#idx_multi <- rowData(sce)$atlas.utr_type == 'multi'
+idx_multi <- rowData(sce) %>% as_tibble %>%
+  filter(atlas.utr_type == 'multi', atlas.ncelltypes_utr > 0, !is_ipa) %>%
+  add_count(gene_id, name='n_utrs') %>%
+  filter(n_utrs > 1) %$%
+  { rownames(sce) %in% transcript_id }
+
 idx_consistent <- rowData(sce)$is_consistent
 
 gene_id2name <- rowData(sce) %>% as_tibble %>% pull(gene_name, name=gene_id)

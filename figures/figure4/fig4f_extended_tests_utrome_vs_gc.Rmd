@@ -132,7 +132,7 @@ test_lbl_lvls <- c("MEF vs mESC",
                    "BSpleen vs TSpleen",
                    "NeurEC vs mNeur")
 
-df_summary_long <- df_summary %>%
+df_summary_long_frac <- df_summary %>%
   mutate(test_label=fct(str_c(end, " vs ", start), test_lbl_lvls)) %>%
   dplyr::select(test_label, frac_sig_GENCODE, frac_sig_UTRome) %>%
   pivot_longer(cols=starts_with("frac_sig"), 
@@ -140,7 +140,7 @@ df_summary_long <- df_summary %>%
                names_prefix="frac_sig_") %>%
   mutate(target=fct(target, c("GENCODE", "UTRome")))
 
-df_summary_long %>%
+df_summary_long_frac %>%
   arrange(desc(target)) %>%
   ggplot(aes(x=test_label, y=frac_sig, fill=target)) +
   geom_bar(stat='identity', position=position_identity(), 
@@ -152,7 +152,7 @@ df_summary_long %>%
        fill="scUTRquant\nTarget") +
   theme_bw()
 
-df_summary_long %>%
+df_summary_long_frac %>%
   ggplot(aes(x=test_label, y=frac_sig, fill=target)) +
   geom_bar(stat='identity', position='dodge',
            color='black', linewidth=0.1, width=0.8) +
@@ -165,6 +165,44 @@ df_summary_long %>%
 
 ggsave("output/figure4/fig4f-celltypes-utrome-gc-fraction-dodged.pdf", width=6, height=4, dpi=300)
 ```
+
+
+### Absolute Numbers
+```{r abs_dodged, width=6, height=4}
+df_summary_long_n <- df_summary %>%
+  mutate(test_label=fct(str_c(end, " vs ", start), test_lbl_lvls)) %>%
+  dplyr::select(test_label, n_sig_GENCODE, n_sig_UTRome) %>%
+  pivot_longer(cols=starts_with("n_sig"), 
+               names_to="target", values_to="n_sig",
+               names_prefix="n_sig_") %>%
+  mutate(target=fct(target, c("GENCODE", "UTRome")))
+
+df_summary_long_n %>%
+  arrange(desc(target)) %>%
+  ggplot(aes(x=test_label, y=n_sig, fill=target)) +
+  geom_bar(stat='identity', position=position_identity(), 
+           color='black', linewidth=0.1) +
+  scale_fill_manual(values=c("UTRome"='steelblue', "GENCODE"='grey80')) +
+  scale_x_discrete(guide=guide_axis(angle=45)) +
+  scale_y_continuous(expand=c(0,0,0.05,0)) +
+  labs(x=NULL, y="Significant DTU Tests",
+       fill="scUTRquant\nTarget") +
+  theme_bw()
+
+df_summary_long_n %>%
+  ggplot(aes(x=test_label, y=n_sig, fill=target)) +
+  geom_bar(stat='identity', position='dodge',
+           color='black', linewidth=0.1, width=0.8) +
+  scale_fill_manual(values=c("GENCODE"='grey80', "UTRome"='steelblue')) +
+  scale_x_discrete(guide=guide_axis(angle=45)) +
+  scale_y_continuous(expand=c(0,0,0.05,0)) +
+  labs(x=NULL, y="Significant DTU Tests",
+       fill="scUTRquant\nTarget") +
+  theme_bw()
+
+ggsave("output/figure4/fig4f-celltypes-utrome-gc-nsig-dodged.pdf", width=6, height=4, dpi=300)
+```
+
 
 # All Genes
 ## Everything

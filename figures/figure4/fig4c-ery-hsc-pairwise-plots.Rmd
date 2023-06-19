@@ -29,14 +29,14 @@ library(ggrastr)
 set.seed(20211017)
 MIN_DIPA=0.15
 MIN_DLUI=0.15
-MIN_DWUI=0.15
+MIN_DWUI=0.10
 MIN_WD=0.15
 MAX_QVAL=0.05
 
-TSV_WD_TEST="data/dtu/20230522-hsc-ery-twosample-wd.min50.boot10k.tsv.gz"
-TSV_WUI_TEST="data/dtu/20230522-hsc-ery-twosample-wui.min50.boot10k.tsv.gz"
-TSV_LUI_TEST="data/dtu/20230522-hsc-ery-twosample-lui.min50.boot10k.tsv.gz"
-TSV_IPA_TEST="data/dtu/20230522-hsc-ery-twosample-ipa.min50.boot10k.tsv.gz"
+TSV_WD_TEST="data/dtu/20230530-hsc-ery-twosample-wd.min50.boot10k.tsv.gz"
+TSV_WUI_TEST="data/dtu/20230530-hsc-ery-twosample-wui.min50.boot10k.tsv.gz"
+TSV_LUI_TEST="data/dtu/20230530-hsc-ery-twosample-lui.min50.boot10k.tsv.gz"
+TSV_IPA_TEST="data/dtu/20230530-hsc-ery-twosample-ipa.min50.boot10k.tsv.gz"
 ```
 
 ## Functions
@@ -219,11 +219,11 @@ df_test_ery_hsc_wd %>%
 
 ### Volcano Plot
 ```{r plot_volcano_wd, fig.width=7, fig.height=5}
-wdVolcanoPlot(df_test_ery_hsc_wd, max_q=0.05, min_wd=0.15)
+wdVolcanoPlot(df_test_ery_hsc_wd, max_q=MAX_QVAL, min_wd=MIN_WD)
 ```
 
 ```{r plot_volcano_wd_save, fig.width=5, fig.height=5}
-wdVolcanoPlot(df_test_ery_hsc_wd, max_q=0.05, min_wd=0.15, legend=FALSE)
+wdVolcanoPlot(df_test_ery_hsc_wd, max_q=MAX_QVAL, min_wd=MIN_WD, legend=FALSE)
 ggsave("output/figure4/fig4c-ery-hsc-wd-volcano.pdf", width=5, height=5, dpi=300)
 ```
 
@@ -240,17 +240,19 @@ df_test_ery_hsc_wui %>%
 ```{r sig_wui_effect}
 df_test_ery_hsc_wui %>%
   mutate(sig=qval < MAX_QVAL,
-         abs_dwui=ifelse(abs(stat) < MIN_DWUI, "< 0.15", ">=0.15")) %$%
+         abs_dwui=ifelse(abs(stat) < MIN_DWUI, 
+                         sprintf("< %0.2f", MIN_DWUI), 
+                         sprintf(">= %0.2f", MIN_DWUI))) %$%
   table(sig, abs_dwui)
 ```
 
 ### Volcano Plot
 ```{r plot_volcano_wui, fig.width=7, fig.height=5}
-wuiVolcanoPlot(df_test_ery_hsc_wui, max_q=0.05, min_dwui=0.15)
+wuiVolcanoPlot(df_test_ery_hsc_wui, max_q=MAX_QVAL, min_dwui=MIN_DWUI)
 ```
 
 ```{r plot_volcano_wui_save, fig.width=5, fig.height=5}
-wuiVolcanoPlot(df_test_ery_hsc_wui, max_q=0.05, min_dwui=0.15, legend=FALSE)
+wuiVolcanoPlot(df_test_ery_hsc_wui, max_q=MAX_QVAL, min_dwui=MIN_DWUI, legend=FALSE)
 ggsave("output/figure4/fig4c-ery-hsc-wui-volcano.pdf", width=5, height=5, dpi=300)
 ```
 
@@ -274,11 +276,11 @@ df_test_ery_hsc_lui %>%
 
 ### Volcano Plot
 ```{r plot_volcano_lui, fig.width=7, fig.height=5}
-luiVolcanoPlot(df_test_ery_hsc_lui, max_q=0.05, min_dlui=0.15)
+luiVolcanoPlot(df_test_ery_hsc_lui, max_q=MAX_QVAL, min_dlui=MIN_DLUI)
 ```
 
 ```{r plot_volcano_lui_save, fig.width=5, fig.height=5}
-luiVolcanoPlot(df_test_ery_hsc_lui, max_q=0.05, min_dlui=0.15, legend=FALSE)
+luiVolcanoPlot(df_test_ery_hsc_lui, max_q=MAX_QVAL, min_dlui=MIN_DLUI, legend=FALSE)
 ggsave("output/figure4/fig4c-ery-hsc-lui-volcano.pdf", width=5, height=5, dpi=300)
 ```
 
@@ -294,11 +296,11 @@ df_test_ery_hsc_ipa %>%
 
 ### Volcano Plot
 ```{r plot_volcano_ipa, fig.width=7, fig.height=5}
-ipaVolcanoPlot(df_test_ery_hsc_ipa, max_q=0.05, min_dipa=0.15)
+ipaVolcanoPlot(df_test_ery_hsc_ipa, max_q=MAX_QVAL, min_dipa=MIN_DIPA)
 ```
 
 ```{r plot_volcano_ipa_save, fig.width=5, fig.height=5}
-ipaVolcanoPlot(df_test_ery_hsc_ipa, max_q=0.05, min_dipa=0.15, legend=FALSE)
+ipaVolcanoPlot(df_test_ery_hsc_ipa, max_q=MAX_QVAL, min_dipa=MIN_DIPA, legend=FALSE)
 ggsave("output/figure4/fig4c-ery-hsc-ipa-volcano.pdf", width=5, height=5, dpi=300)
 ```
 

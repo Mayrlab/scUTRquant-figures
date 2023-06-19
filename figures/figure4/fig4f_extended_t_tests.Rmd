@@ -108,7 +108,7 @@ sce <- logNormCounts(sce)
 ```{r t_tests}
 res <- bplapply(test_pairs, function (p) {
   findMarkers(sce, groups=sce$celltype_label, restrict=p) %>%
-    `[[`(1) %>%
+    `[[`(p[[2]]) %>%
     as_tibble(rownames="gene_id") %>%
     dplyr::rename(pval=p.value, qval=FDR, log2FC=summary.logFC) %>%
     mutate(start=p[[1]], end=p[[2]]) %>%

@@ -23,6 +23,7 @@ library(magrittr)
 library(cowplot)
 library(ggalluvial)
 library(pheatmap)
+library(ggbeeswarm)
 ```
 
 ## Parameters
@@ -104,6 +105,23 @@ df_clusters <- df_counts %>%
 df_clusters %>%
   select(sample_id, n_clusters_10x, n_clusters_sq, ari) %>%
   knitr::kable()
+```
+
+### ARI Bar
+```{r ari_bar, fig.width=2, fig.height=4}
+n_lab <- sprintf("N = %d", nrow(df_clusters))
+
+df_clusters %>%
+  ggplot(aes(x=n_lab, y=ari)) + 
+  stat_summary(fun='mean', geom='bar', width=0.4, fill='lightgrey', color='black') +
+  stat_summary(fun.data=mean_se, geom='errorbar', width=0.3) +
+  geom_quasirandom(width=0.1, size=1) +
+  scale_y_continuous(limits=c(0,1), expand=expansion(add=c(0,0))) +
+  labs(x=NULL, y="Adjusted Rand Index") +
+  theme_bw()
+
+ggsave("output/figure1/sup1D-clusters-ari.pdf", 
+       width=2, height=4, dpi=300)
 ```
 
 ## Raw Cluster Plots

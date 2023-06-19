@@ -37,7 +37,7 @@ MIN_NCELLS=50
 MIN_FC=1.5
 MIN_L2FC=log2(MIN_FC)
 
-TSV_DGE_TESTS="data/dge/20230516-ery-trajectory-pairwise-t-tests.tsv.gz"
+TSV_DGE_TESTS="data/dge/20230530-ery-trajectory-pairwise-t-tests.tsv.gz"
 TSV_WUI_TESTS="data/dtu/20230516-ery-trajectory-pairwise-wui-tests.min50.boot10k.tsv.gz"
 ```
 

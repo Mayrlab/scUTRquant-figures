@@ -36,7 +36,7 @@ MAX_QVAL=0.05
 MIN_FC=1.5
 MIN_L2FC=log2(MIN_FC)
 
-TSV_TESTS="data/dge/20230516-ery-trajectory-pairwise-t-tests.tsv.gz"
+TSV_TESTS="data/dge/20230530-ery-trajectory-pairwise-t-tests.tsv.gz"
 SCE_GENES="data/sce/hspcs.genes.full_annot.Rds"
 
 PDF_OUT_UTRTYPE=sprintf("output/figure4/fig4d-dge-fc%0.1f-hsc-ery-path-utr-type.pdf", MIN_FC)
@@ -79,12 +79,15 @@ df_summary <- df_tests %>%
             .groups='drop')
 
 df_sig_genes <- df_tests %>%
-  filter(sig) %>%
+  #filter(sig) %>%
   group_by(gene_symbol, gene_id) %>%
   summarize(max_test=test[which.max(abs(log2FC))],
             max_log2FC=log2FC[which.max(abs(log2FC))],
             mean_log2FC=mean(log2FC),
+            # end_log2FC=log2FC[test == "12/Ery vs 14/Stem"],
+            is_sig=any(sig),
             .groups='drop') %>%
+  filter(is_sig) %>%
   mutate(utr_type=gid2utr_type[gene_id])
 
 genes_increasing <- filter(df_sig_genes, mean_log2FC > 0)$gene_id
@@ -104,22 +107,22 @@ genes_decreasing_single <- filter(df_sig_genes, mean_log2FC < 0, utr_type == "si
 ```{r compute_luis}
 celltypes <- unique(c(df_tests$start, df_tests$end))
 
-idx_cells <- sce$clusters %in% celltypes
-idx_sig_genes <- rowData(sce) %>%
-  { (.$gene_id %in% df_sig_genes$gene_id) }
-
-## filter sce
-sce %<>% `[`(idx_sig_genes, idx_cells)
-cts_gene_cell <- assay(sce, "normcounts")
+## filter cells
+sce %<>% `[`(, .$clusters %in% celltypes)
 
 ## design matrices
 M_cell_celltype <- t(fac2sparse(sce$clusters))[,celltypes]
 
-## compute luis
-cts_gene_celltype <- cts_gene_cell %*% M_cell_celltype
-tpm_gene_celltype <- cts_gene_celltype %>% 
+## compute tpms
+tpm_gene_celltype <- (assay(sce, "normcounts") %*% M_cell_celltype) %>%
+  ## normalize to tpm
   { . %*% Diagonal(ncol(.), 1e6/colSums(.), names=TRUE) } %>%
   as.matrix
+
+## filter sig genes
+idx_sig_genes <- rownames(tpm_gene_celltype) %in% df_sig_genes$gene_id
+tpm_gene_celltype %<>% `[`(idx_sig_genes,)
+
 ztpm_gene_celltype <- t(tpm_gene_celltype) %>% scale %>% t
 ```
 
@@ -128,7 +131,7 @@ ztpm_gene_celltype <- t(tpm_gene_celltype) %>% scale %>% t
 ### Compute Orderings
 ```{r compute_gene_orders}
 wt_ztpm <- ztpm_gene_celltype %>% 
-  { setNames(as.numeric(. %*% seq_len(ncol(.))), rownames(.)) }
+  { setNames(as.numeric(. %*% seq(-1,1, length.out=ncol(.))), rownames(.)) }
 
 ## split by direction
 idx_increasing <- which(names(wt_ztpm) %in% genes_increasing) %>% `[`(order(wt_ztpm[.]))
@@ -250,7 +253,7 @@ pheatmap(ztpm_gene_celltype[idx_direction_utr_type,],
 NCOLORS=100
 breaks.point <- seq(0, 5, length.out=NCOLORS + 1)
 
-pheatmap(log10(tpm_gene_celltype[rev(idx_utr_type),]), 
+pheatmap(log10(tpm_gene_celltype[rev(idx_direction),]), 
          cluster_rows=FALSE, cluster_cols=FALSE, 
          labels_col=c("HSC", "Prog1", "Prog2", "MEP", "ProE", "Baso1", "Baso2", "Ery"),
          show_rownames=FALSE, scale='none', fontsize=8,
