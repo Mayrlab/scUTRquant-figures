@@ -1,0 +1,96 @@
+---
+title: "Supplementary Table 4 - Mouse UTRome"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+Assemble Table 4 of mouse 3'UTR usage annotations.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(writexl)
+```
+
+## Parameters
+```{r set_params}
+set.seed(20210818)
+
+FILE_UTROME_TXS = "data/utrs/mm10/utrome_txs_annotation.Rds"
+FILE_UTROME_GENES = "data/utrs/mm10/utrome_genes_annotation.Rds"
+FILE_MERGE = "data/gtf/mca/utrome.e30.t5.gc25.pas3.f0.9999.w500.m200.tsv"
+
+FILE_OUT = "output/tables/Suppl_Table4.xlsx"
+```
+
+
+# Data
+## Loading
+### Load annotations
+```{r load_inital_annots, message=FALSE}
+df_txs <- readRDS(FILE_UTROME_TXS) %>% as_tibble()
+df_genes <- readRDS(FILE_UTROME_GENES) %>% as_tibble()
+df_merge <- read_tsv(FILE_MERGE) %>%
+  group_by(tx_out) %>%
+  summarize(merged_txs=str_c(tx_in, collapse=";"))
+```
+
+## Preprocessing
+```{r prepare_data}
+df_txs %<>%
+  left_join(df_merge, by=c("transcript_id"="tx_out")) %>%
+  dplyr::select(gene_name, gene_id,
+                transcript_id, utr_name, utr_position, 
+                utr_length, is_improper_utr_length,
+                atlas.ncelltypes_gene, atlas.ncelltypes_utr,
+                is_ipa, is_lu, is_distal,
+                atlas.utr_type, atlas.n_utrs_no_ipa,
+                atlas.pct_utr_no_ipa, atlas.pct_utr_total, atlas.rank_utr_total,
+                is_blacklisted, is_consistent, merged_txs) %>%
+  arrange(gene_name, utr_position)
+
+df_genes %<>%
+  dplyr::select(gene_name, gene_id,
+                atlas.ncelltypes_gene, atlas.utr_type, atlas.n_utrs_no_ipa,
+                utr_lengths_tandem, utr_lengths_ipa,
+                is_blacklisted, is_consistent) %>%
+  arrange(gene_name)
+```
+
+# Export
+```{r export}
+write_xlsx(list("Genes - Mouse UTRome"=df_genes,
+                "Transcripts - Mouse UTRome"=df_txs), FILE_OUT)
+```
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```
