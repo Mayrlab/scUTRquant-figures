@@ -1,0 +1,135 @@
+---
+title: "Supplementary Table 1"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+Assemble Table 1 of human MWS cleavage site annotations.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(plyranges)
+library(writexl)
+```
+
+## Parameters
+```{r set_params}
+set.seed(20210818)
+EPSILON = 30
+TPM = 5
+
+FILE_UTROME = sprintf("data/gtf/hcl/df_utrome_txs.e%d.t%d.gc39.pas3.f0.9999.w500.Rds", EPSILON, TPM)
+FILE_CELLTYPES = sprintf("data/bed/celltypes/hcl/celltypes.e%d.t%d.bed.gz", EPSILON, TPM)
+FILE_CS_USAGE = "data/celltype_score/hcl/celltype_scores.tsv"
+FILE_PHASTCONS = "data/conservation/hcl/df_phastCons30way_100nt_masked.tsv.gz"
+FILE_APARENT = "data/aparent2/utrome_cleavage_sites.e30.t5.gc39.w205.l11.csv.gz"
+
+FILE_OUT = "output/tables/Suppl_Table1.xlsx"
+```
+
+
+# Data
+## Loading
+### Load initial annotations
+```{r load_inital_annots, message=FALSE}
+df_txs <- readRDS(FILE_UTROME) %>%
+  as_tibble() %>%
+  mutate(is_proximal=NULL, is_distal=NULL, 
+         utr_count_raw=NULL, utr_count_no_ipa=NULL, 
+         utr_type_raw=NULL, utr_type_no_ipa=NULL) %>%
+  dplyr::rename(utr_pos=utr_rank)
+```
+
+### Load genomic locations
+```{r location}
+df_loc <- read_gff("data/gtf/hcl/utrome.e30.t5.gc39.pas3.f0.9999.w500.gtf.gz") %>%
+  filter(type == "transcript") %>%
+  anchor_3p %>%
+  mutate(width=1) %>%
+  as_tibble() %>%
+  dplyr::select(transcript_id, utr_name, seqnames, end, strand) %>%
+  dplyr::rename(end_3p=end, seq=seqnames)
+```
+
+### Load major-minor annots
+```{r load_cs_usage}
+df_usage <- read_tsv(FILE_CS_USAGE, show_col_types=FALSE)
+```
+
+### Load PhastCons
+```{r load_cons}
+df_cons <- read_tsv(FILE_PHASTCONS, show_col_types=FALSE) %>%
+  group_by(transcript_id) %>%
+  summarize(phastCons30way=ifelse(all(is.na(phastCons30way)), 
+                                  NA, max(phastCons30way, na.rm=TRUE)))
+```
+
+### Load APARENT scores
+```{r load_aparent}
+df_aparent <- read_csv(FILE_APARENT, show_col_types=FALSE) %>%
+  dplyr::select(transcript_id, seqnames, 
+                likelihood_narrow_w30, likelihood_full) %>%
+  dplyr::rename(seq=seqnames, 
+                aparent2_w30=likelihood_narrow_w30,
+                aparent2_full=likelihood_full)
+```
+
+## Preprocessing
+```{r prepare_data}
+df_combined <- left_join(df_txs, df_loc, by=c("transcript_id", "utr_name")) %>%
+  full_join(df_usage, by=c("transcript_id", "gene_id")) %>%
+  mutate(n_celltypes_tx=ifelse(is.na(n_celltypes_tx), 0, n_celltypes_tx),
+         cs_usage_class=ifelse(frac_celltypes < 0.1, "minor", "major")) %>%
+  dplyr::rename(cs_usage_score=frac_celltypes) %>%
+  left_join(df_cons, by="transcript_id") %>%
+  left_join(df_aparent, by=c("transcript_id", "seq")) %>%
+  arrange(gene_name, utr_pos) %>%
+  dplyr::select(
+    gene_name, gene_id,
+    transcript_name, transcript_id,
+    utr_name, utr_pos,
+    seq, end_3p, strand,
+    is_ipa, is_novel,
+    n_celltypes_gene, n_celltypes_tx,
+    cs_usage_score, cs_usage_class,
+    phastCons30way, aparent2_w30, aparent2_full
+  )
+```
+
+# Export
+```{r export}
+write_xlsx(list("MWS CS Annots (HCL)"=df_combined), FILE_OUT)
+```
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

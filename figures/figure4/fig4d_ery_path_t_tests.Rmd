@@ -29,7 +29,7 @@ library(BiocParallel)
 
 ## Parameters
 ```{r set_params}
-set.seed(20211026)
+set.seed(20230515)
 register(MulticoreParam(10))
 
 celltypes <- c("14/Stem", "0", "3", "10", "8", "13", "11", "12/Ery")
@@ -47,7 +47,7 @@ idx_cells <- sce$clusters %in% celltypes
 
 sce %<>% `[`(, idx_cells)
 
-gene_id2sym <- rowData(sce) %>% as_tibble %$% setNames(gene_symbol, gene_id)
+gene_id2sym <- rowData(sce) %>% as_tibble %$% setNames(gene_name, gene_id)
 
 ## include logcounts
 sce <- logNormCounts(sce)
@@ -71,7 +71,7 @@ for (i in seq(1, length(celltypes)-1)) {
 ```{r t_tests}
 res <- bplapply(test_pairs, function (p) {
   findMarkers(sce, groups=sce$clusters, restrict=p) %>%
-    `[[`(1) %>%
+    `[[`(p[[2]]) %>%
     as_tibble(rownames="gene_id") %>%
     dplyr::rename(pval=p.value, qval=FDR, log2FC=summary.logFC) %>%
     mutate(start=p[[1]], end=p[[2]]) %>%

@@ -34,6 +34,11 @@ set.seed(20211020)
 MIN_DLUI=0.15
 MAX_QVAL=0.05
 MIN_NCELLS=50
+MIN_FC=1.5
+MIN_L2FC=log2(MIN_FC)
+
+TSV_DGE_TESTS="data/dge/20221222-ery-trajectory-pairwise-t-tests.tsv.gz"
+TSV_LUI_TESTS="data/dtu/20211019-ery-trajectory-pairwise-lui-tests.min50.boot10k.tsv.gz"
 ```
 
 ## Functions
@@ -45,11 +50,16 @@ MIN_NCELLS=50
 # Data
 ## Loading
 ```{r load_data, message=FALSE}
-df_tests <- read_tsv("data/dtu/20211019-ery-trajectory-pairwise-lui-tests.min50.boot10k.tsv.gz", 
+df_tests <- read_tsv(TSV_LUI_TESTS, 
                      col_types='ccccddi') %>%
   mutate(test=str_c(end, " vs ", start),
          qval=p.adjust(pval, method='BH'),
          sig=(qval < MAX_QVAL) & (abs(stat) >= MIN_DLUI))
+
+df_dge <- read_tsv(TSV_DGE_TESTS, col_types='ccccddd') %>%
+  mutate(test=str_c(end, " vs ", start),
+         qval=p.adjust(pval, method='BH'),
+         sig=(qval < MAX_QVAL) & (abs(log2FC) >= MIN_L2FC))
 
 sce <- readRDS("data/sce/hspcs.txs.full_annot.Rds")
 ```
@@ -75,6 +85,10 @@ df_sig_genes <- df_tests %>%
 
 genes_lengthening <- filter(df_sig_genes, max_dlui > 0)$gene
 genes_shortening  <- filter(df_sig_genes, max_dlui < 0)$gene
+
+genes_dge <- filter(df_sig_genes, gene %in% unique(filter(df_dge, sig)$gene_id))$gene
+genes_lengthening_nodge <- setdiff(genes_lengthening, genes_dge)
+genes_shortening_nodge <- setdiff(genes_shortening, genes_dge)
 ```
 
 ### Compute Significant LUIs
@@ -104,21 +118,11 @@ ncells_gene_celltype <- ((M_gene_tx %*% cts_tx_cell) > 0) %*% M_cell_celltype
 ## filter luis
 idx_expressed_genes <- rowAlls(drop0(ncells_gene_celltype >= MIN_NCELLS), value=TRUE)
 flui_gene_celltype <- as.matrix(lui_gene_celltype[idx_expressed_genes,])
+
+dlui_gene_celltype <- t(flui_gene_celltype) %>% scale(scale=FALSE) %>% t()
+zdlui_gene_celltype <- t(flui_gene_celltype) %>% scale() %>% t()
 ```
 
-
-### Compute Ordering
-```{r compute_gene_orders}
-lui_medians <- setNames(rowMedians(flui_gene_celltype), rownames(flui_gene_celltype))
-
-idx_lengthening <- which(names(lui_medians) %in% genes_lengthening)
-idx_shortening  <- which(names(lui_medians) %in% genes_shortening)
-
-idx_lengthening %<>% `[`(order(lui_medians[.]))
-idx_shortening %<>% `[`(order(lui_medians[.]))
-
-idx_ordered <- c(idx_lengthening, idx_shortening)
-```
 
 # Summary Overview
 ## Significant Tests
@@ -144,9 +148,22 @@ df_sig_genes %>%
 
 
 
-# Plot Heatmap
+# Plot Heatmaps
 
-```{r fig_heatmap, fig.width=4, fig.height=4}
+## LUI
+### Longer-Shorter Order
+```{r compute_gene_orders1}
+lui_medians <- setNames(rowMedians(flui_gene_celltype), rownames(flui_gene_celltype))
+
+idx_lengthening <- which(names(lui_medians) %in% genes_lengthening) %>% `[`(order(lui_medians[.]))
+idx_shortening  <- which(names(lui_medians) %in% genes_shortening) %>% `[`(order(lui_medians[.]))
+
+idx_ordered <- c(idx_lengthening, idx_shortening)
+```
+
+We observe `r length(idx_lengthening)` genes lengthening and `r length(idx_shortening)` genes shortening.
+
+```{r fig_heatmap_lui, fig.width=4, fig.height=4}
 NCOLORS=100
 breaks.point <- seq(0, 1, length.out=NCOLORS + 1)
 
@@ -155,11 +172,135 @@ pheatmap(flui_gene_celltype[idx_ordered,],
          labels_col=c("HSC", "Prog1", "Prog2", "MEP", "ProE", "Baso1", "Baso2", "Ery"),
          show_rownames=FALSE, scale='none', fontsize=8,
          color=colorRampPalette(c("#336BA8", "white", "#D62125"))(NCOLORS),
-         breaks=breaks.point, angle_col=0) %T>%
-  save_plot(filename="output/figure4/fig4d-lui-hsc-ery-path.pdf",
-            base_width=4, base_height=4)
+         breaks=breaks.point, angle_col=0, 
+         filename="output/figure4/fig4d-lui-hsc-ery-path.pdf",
+         width=4, height=4)
+```
+### DGE-Longer-Shorter Order
+```{r compute_gene_orders2}
+idx_dge <- which(names(lui_medians) %in% genes_dge) %>% `[`(order(lui_medians[.]))
+idx_lengthening_nodge <- which(names(lui_medians) %in% genes_lengthening_nodge) %>% `[`(order(lui_medians[.]))
+idx_shortening_nodge  <- which(names(lui_medians) %in% genes_shortening_nodge) %>% `[`(order(lui_medians[.]))
+
+idx_ordered <- c(idx_dge, idx_lengthening_nodge, idx_shortening_nodge)
 ```
 
+We observe `r length(idx_dge)` genes with DGE and dLUI, `r length(idx_lengthening_nodge)` genes lengthening only, and `r length(idx_shortening_nodge)` genes shortening only.
+
+```{r fig_heatmap_lui_sepdge, fig.width=4, fig.height=4}
+NCOLORS=100
+breaks.point <- seq(0, 1, length.out=NCOLORS + 1)
+
+pheatmap(flui_gene_celltype[idx_ordered,], 
+         cluster_rows=FALSE, cluster_cols=FALSE, 
+         labels_col=c("HSC", "Prog1", "Prog2", "MEP", "ProE", "Baso1", "Baso2", "Ery"),
+         show_rownames=FALSE, scale='none', fontsize=8,
+         color=colorRampPalette(c("#336BA8", "white", "#D62125"))(NCOLORS),
+         breaks=breaks.point, angle_col=0,
+         filename="output/figure4/fig4d-lui-hsc-ery-path-sepdge.pdf",
+         width=4, height=4)
+```
+
+## DLUI
+### Longer-Shorter Order
+```{r compute_gene_orders3}
+wt_dlui <- (dlui_gene_celltype %*% seq(8))[,1]
+
+idx_lengthening <- which(names(wt_dlui) %in% genes_lengthening) %>% `[`(order(wt_dlui[.]))
+idx_shortening  <- which(names(wt_dlui) %in% genes_shortening) %>% `[`(order(wt_dlui[.]))
+
+idx_ordered <- c(idx_lengthening, idx_shortening)
+```
+
+We observe `r length(idx_lengthening)` genes lengthening and `r length(idx_shortening)` genes shortening.
+
+```{r fig_heatmap_dlui, fig.width=4, fig.height=4}
+NCOLORS=100
+breaks.point <- seq(-0.3, 0.3, length.out=NCOLORS + 1)
+
+pheatmap(dlui_gene_celltype[idx_ordered,], 
+         cluster_rows=FALSE, cluster_cols=FALSE, 
+         labels_col=c("HSC", "Prog1", "Prog2", "MEP", "ProE", "Baso1", "Baso2", "Ery"),
+         show_rownames=FALSE, scale='none', fontsize=8,
+         color=colorRampPalette(c("#336BA8", "white", "#D62125"))(NCOLORS),
+         breaks=breaks.point, angle_col=0,
+         filename="output/figure4/fig4d-dlui-hsc-ery-path.pdf",
+         width=4, height=4)
+```
+
+### DGE-Longer-Shorter Order
+```{r compute_gene_orders4}
+idx_dge <- which(names(wt_dlui) %in% genes_dge) %>% `[`(order(wt_dlui[.]))
+idx_lengthening_nodge <- which(names(wt_dlui) %in% genes_lengthening_nodge) %>% `[`(order(wt_dlui[.]))
+idx_shortening_nodge  <- which(names(wt_dlui) %in% genes_shortening_nodge) %>% `[`(order(wt_dlui[.]))
+
+idx_ordered <- c(idx_dge, idx_lengthening_nodge, idx_shortening_nodge)
+```
+
+We observe `r length(idx_dge)` genes with DGE and dLUI, `r length(idx_lengthening_nodge)` genes lengthening only, and `r length(idx_shortening_nodge)` genes shortening only.
+
+```{r fig_heatmap_dlui_sepdge, fig.width=4, fig.height=4}
+NCOLORS=100
+breaks.point <- seq(-0.3, 0.3, length.out=NCOLORS + 1)
+
+pheatmap(dlui_gene_celltype[idx_ordered,], 
+         cluster_rows=FALSE, cluster_cols=FALSE, 
+         labels_col=c("HSC", "Prog1", "Prog2", "MEP", "ProE", "Baso1", "Baso2", "Ery"),
+         show_rownames=FALSE, scale='none', fontsize=8,
+         color=colorRampPalette(c("#336BA8", "white", "#D62125"))(NCOLORS),
+         breaks=breaks.point, angle_col=0,
+         filename="output/figure4/fig4d-dlui-hsc-ery-path-sepdge.pdf",
+         width=4, height=4)
+```
+
+## ZDLUI
+### Longer-Shorter Order
+```{r compute_gene_orders5}
+wt_zdlui <- (zdlui_gene_celltype %*% seq(8))[,1]
+
+idx_lengthening <- which(names(wt_zdlui) %in% genes_lengthening) %>% `[`(order(wt_zdlui[.]))
+idx_shortening  <- which(names(wt_zdlui) %in% genes_shortening) %>% `[`(order(wt_zdlui[.]))
+
+idx_ordered <- c(idx_lengthening, idx_shortening)
+```
+
+```{r fig_heatmap_zdlui, fig.width=4, fig.height=4}
+NCOLORS=100
+breaks.point <- seq(-3, 3, length.out=NCOLORS + 1)
+
+pheatmap(zdlui_gene_celltype[idx_ordered,], 
+         cluster_rows=FALSE, cluster_cols=FALSE, 
+         labels_col=c("HSC", "Prog1", "Prog2", "MEP", "ProE", "Baso1", "Baso2", "Ery"),
+         show_rownames=FALSE, scale='none', fontsize=8,
+         color=colorRampPalette(c("#336BA8", "white", "#D62125"))(NCOLORS),
+         breaks=breaks.point, angle_col=0,
+         filename="output/figure4/fig4d-zdlui-hsc-ery-path.pdf",
+         width=4, height=4)
+```
+
+### DGE-Longer-Shorter Order
+```{r compute_gene_orders6}
+idx_dge <- which(names(wt_zdlui) %in% genes_dge) %>% `[`(order(wt_zdlui[.]))
+idx_lengthening_nodge <- which(names(wt_zdlui) %in% genes_lengthening_nodge) %>% `[`(order(wt_zdlui[.]))
+idx_shortening_nodge  <- which(names(wt_zdlui) %in% genes_shortening_nodge) %>% `[`(order(wt_zdlui[.]))
+
+idx_ordered <- c(idx_dge, idx_lengthening_nodge, idx_shortening_nodge)
+```
+
+
+```{r fig_heatmap_zdlui_sepdge, fig.width=4, fig.height=4}
+NCOLORS=100
+breaks.point <- seq(-3, 3, length.out=NCOLORS + 1)
+
+pheatmap(zdlui_gene_celltype[idx_ordered,], 
+         cluster_rows=FALSE, cluster_cols=FALSE, 
+         labels_col=c("HSC", "Prog1", "Prog2", "MEP", "ProE", "Baso1", "Baso2", "Ery"),
+         show_rownames=FALSE, scale='none', fontsize=8,
+         color=colorRampPalette(c("#336BA8", "white", "#D62125"))(NCOLORS),
+         breaks=breaks.point, angle_col=0,
+         filename="output/figure4/fig4d-zdlui-hsc-ery-path-sepdge.pdf",
+         width=4, height=4)
+```
 
 ---
 

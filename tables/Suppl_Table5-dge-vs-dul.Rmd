@@ -1,0 +1,73 @@
+---
+title: "Table S5"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+Generate final Table S5.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(readxl)
+library(writexl)
+```
+
+## Parameters
+```{r set_params}
+FILE_DGE_DUL_LFC125 = "output/tables/tbl3-extended-celltypes-chisq-results-t-tests.lfc125.xlsx"
+FILE_DGE_DUL_LFC150 = "output/tables/tbl3-extended-celltypes-chisq-results-t-tests.xlsx"
+FILE_DGE_DUL_CORRS = "output/tables/tbl3b-extended-celltypes-corrs-results.xlsx"
+
+FILE_OUT = "output/tables/Suppl_Table5.xlsx"
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+df_lfc125 <- read_xlsx(FILE_DGE_DUL_LFC125) %>% rename(DUL=DTU)
+df_lfc150 <- read_xlsx(FILE_DGE_DUL_LFC150) %>% rename(DUL=DTU)
+df_corrs <- read_xlsx(FILE_DGE_DUL_CORRS)
+```
+
+## Export
+```{r export}
+list(
+  "DGE-DUL Tests (L2FC 1.5)"=df_lfc150,
+  "DGE-DUL Tests (L2FC 1.25)"=df_lfc125,
+  "DGE-DUL Correlations"=df_corrs
+) %>%
+  write_xlsx(FILE_OUT)
+```
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

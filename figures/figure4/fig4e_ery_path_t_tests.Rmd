@@ -51,6 +51,12 @@ gene_id2sym <- rowData(sce) %>% as_tibble %$% setNames(gene_symbol, gene_id)
 
 ## include logcounts
 sce <- logNormCounts(sce)
+
+## clusters as factors
+## NB: This is does in reverse order due to the `findMarkers` test defaulting to 
+## the fold-change direction lower/higher, which leads to HSC/Ery, when we always want
+## higher/lower (e.g., Ery/HSC)
+sce$clusters %<>% factor(levels=rev(celltypes))
 ```
 
 # Analysis

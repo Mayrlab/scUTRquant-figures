@@ -96,7 +96,7 @@ sce %<>% `[`(, idx_cells)
 
 colData(sce)['celltype_label'] <- celltype_map[sce$tissue_celltype]
 
-gene_id2sym <- rowData(sce) %>% as_tibble %$% setNames(gene_symbol, gene_id)
+gene_id2sym <- rowData(sce) %>% as_tibble %$% setNames(gene_name, gene_id)
 
 ## include logcounts
 sce <- logNormCounts(sce)
@@ -108,7 +108,7 @@ sce <- logNormCounts(sce)
 ```{r t_tests}
 res <- bplapply(test_pairs, function (p) {
   findMarkers(sce, groups=sce$celltype_label, restrict=p) %>%
-    `[[`(1) %>%
+    `[[`(p[[2]]) %>%
     as_tibble(rownames="gene_id") %>%
     dplyr::rename(pval=p.value, qval=FDR, log2FC=summary.logFC) %>%
     mutate(start=p[[1]], end=p[[2]]) %>%

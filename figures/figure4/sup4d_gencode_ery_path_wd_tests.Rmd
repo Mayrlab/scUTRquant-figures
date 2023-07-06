@@ -1,0 +1,232 @@
+---
+title: "Pairwise WUI Tests - Ery Trajectory (GENCODE)"
+author: "Mervin Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_levels: 2
+---
+
+# Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(SingleCellExperiment)
+library(Matrix)
+library(matrixStats)
+library(tidyverse)
+library(magrittr)
+library(cowplot)
+library(ggridges)
+library(BiocParallel)
+library(scutrboot)
+
+register(MulticoreParam(6))
+```
+
+# Parameters
+```{r params}
+set.seed(20230515)
+MIN_CELLS=50
+MIN_COUNTS=10
+NUM_BOOT=10000
+MIN_WD=0.15
+MAX_QVAL=0.05
+
+SCE_GENCODE="../../git/scUTRquant/data/sce/gencode_vM25_pc_w500/dahlin18.txs.Rds"
+SCE_UTROME="data/sce/hspcs.txs.full_annot.Rds"
+```
+
+## Test Pairs
+```{r partition_pairs}
+celltypes <- c("14/Stem", "12/Ery")
+
+test_pairs <- length(celltypes) %>% { vector("list", .*(.-1)/2) }
+
+k <- 1
+for (i in seq(1, length(celltypes)-1)) {
+  for (j in seq(1, length(celltypes) - i)) {
+    test_pairs[[k]] <- c(celltypes[j], celltypes[i+j])
+    k <- k + 1
+  }
+}
+```
+
+# UTRome
+## Load Data
+```{r load_data_utrome}
+sce <- readRDS(SCE_UTROME)
+
+gene_id2sym <- rowData(sce) %>% as_tibble %$% setNames(gene_name, gene_id)
+
+## Filter testable
+sce %<>% `[`(,.$clusters %in% celltypes)
+sce %<>% `[`(rowSums(counts(sce)) > MIN_COUNTS, )
+
+idx_multi <- rowData(sce) %>% as_tibble() %>%
+  add_count(gene_id, name="n_txs") %>%
+  filter(n_txs > 1) %>%
+  pull(transcript_id)
+
+# filter to multiutrs in celltypes of interest
+sce %<>% `[`(idx_multi,.$clusters %in% celltypes)
+```
+
+## Two-Sample Tests
+```{r wd_tests_utrome}
+res <- bplapply(test_pairs, function (p) {
+  testTwoSample(sce, assayName="counts",
+                sampleKey="clusters", geneKey="gene_id",
+                sample0=p[[1]], sample1=p[[2]], 
+                statistic="WD",
+                nBootstraps=NUM_BOOT, minCellsPerGene=50) %>%
+    as_tibble() %>%
+    mutate(start=p[[1]], end=p[[2]]) %>%
+    select(gene, start, end, stat, pval, bootstraps)
+})
+
+df_tests_utrome <- do.call(rbind, res) %>%
+  mutate(gene_symbol=gene_id2sym[gene]) %>%
+  select(gene_symbol, everything())
+
+df_tests_utrome %>% arrange(pval) %>% head(50) %>% knitr::kable()
+```
+
+```{r hist_pvals_utrome}
+hist(df_tests_utrome$pval, breaks=40, xlab="p-value",
+     main="Distribution of p-values for UTRome Two-Sample WD Tests")
+```
+
+
+
+# GENCODE Tests
+```{r load_data_gencode}
+sce <- readRDS(SCE_GENCODE)
+
+## Filter testable
+sce %<>% `[`(,.$clusters %in% celltypes)
+sce %<>% `[`(rowSums(counts(sce)) > MIN_COUNTS, )
+
+idx_multi <- rowData(sce) %>% as_tibble() %>%
+  add_count(gene_id, name="n_txs") %>%
+  filter(n_txs > 1) %>%
+  pull(transcript_id)
+
+# filter to multiutrs in celltypes of interest
+sce %<>% `[`(idx_multi,.$clusters %in% celltypes)
+```
+
+## Two-Sample Tests
+```{r wd_tests_gencode}
+res <- bplapply(test_pairs, function (p) {
+  testTwoSample(sce, assayName="counts",
+                sampleKey="clusters", geneKey="gene_id",
+                sample0=p[[1]], sample1=p[[2]], 
+                statistic="WD",
+                nBootstraps=NUM_BOOT, minCellsPerGene=50) %>%
+    as_tibble() %>%
+    mutate(start=p[[1]], end=p[[2]]) %>%
+    select(gene, start, end, stat, pval, bootstraps)
+})
+
+df_tests_gencode <- do.call(rbind, res) %>%
+  mutate(gene_symbol=gene_id2sym[gene]) %>%
+  select(gene_symbol, everything())
+
+df_tests_gencode %>% arrange(pval) %>% head(50) %>% knitr::kable()
+```
+
+```{r hist_pvals_gencode}
+hist(df_tests_gencode$pval, breaks=40, xlab="p-value",
+     main="Distribution of p-values for GENCODE Two-Sample WD Tests")
+```
+
+```{r combine}
+df_combined <- bind_rows(mutate(df_tests_utrome, annot="UTRome"),
+                         mutate(df_tests_gencode, annot="GENCODE")) %>%
+  mutate(test_pair=str_c(start, " vs ", end)) %>%
+  group_by(annot) %>%
+  mutate(qval=p.adjust(pval, method="BH")) %>%
+  ungroup()
+```
+
+```{r hists_by_pair, fig.width=8, fig.height=4}
+df_combined %>%
+  ggplot(aes(x=pval)) +
+  #geom_density_ridges(stat='binline', bins=40, scale=0.95, panel_scaling=TRUE) +
+  geom_histogram(fill='grey90', color='grey10', bins=40) +
+  labs(x="p-value", y=NULL, title="WD Tests") +
+  facet_grid(cols=vars(annot), scales="fixed") +
+  theme_minimal_vgrid()
+```
+
+```{r}
+df_combined %>%
+  filter(stat >= MIN_WD, qval < MAX_QVAL) %>%
+  dplyr::count(test_pair, annot) %>%
+  pivot_wider(id_cols="test_pair", names_from="annot", values_from="n")
+```
+
+
+```{r}
+df_compare <- df_combined %>%
+  dplyr::select(gene_symbol, test_pair, annot, stat, pval, qval) %>%
+  pivot_wider(id_cols=c("gene_symbol", "test_pair"),
+              names_from="annot", 
+              values_from=c("stat", "pval", "qval"))
+```
+
+```{r fig.width=5, fig.height=5}
+df_compare %>%
+  ggplot(aes(x=stat_GENCODE, y=stat_UTRome)) +
+  geom_point(size=0.1) +
+  geom_abline(slope=1, linetype='dashed', color='orchid', linewidth=0.5) +
+  lims(x=c(0,1), y=c(0,1)) +
+  coord_equal() +
+  labs(x="WD statistic (GENCODE)",
+       y="WD statistic (UTRome)") +
+  theme_bw()
+
+df_compare %>%
+  mutate(sig_label=case_when(
+    qval_UTRome < MAX_QVAL & qval_GENCODE < MAX_QVAL ~ "both",
+    qval_UTRome < MAX_QVAL ~ "UTRome",
+    qval_GENCODE < MAX_QVAL ~ "GENCODE",
+    TRUE ~ "none"
+  ) %>% factor(levels=c("none", "GENCODE", "UTRome", "both"))) %>%
+  ggplot(aes(x=stat_GENCODE, y=stat_UTRome)) +
+  geom_point(aes(color=sig_label), size=0.1) +
+  geom_abline(slope=1, linetype='dashed', color='grey20', linewidth=0.5) +
+  lims(x=c(0,1), y=c(0,1)) +
+  coord_equal() +
+  guides(color = guide_legend(override.aes = list(size=4))) +
+  labs(x="WD statistic (GENCODE)",
+       y="WD statistic (UTRome)",
+       color="qvalue < 0.05") +
+  theme_bw()
+
+df_compare %>%
+  mutate(sig_label=case_when(
+    qval_UTRome < MAX_QVAL & qval_GENCODE < MAX_QVAL ~ "both",
+    qval_UTRome < MAX_QVAL ~ "UTRome",
+    qval_GENCODE < MAX_QVAL ~ "GENCODE",
+    TRUE ~ "none"
+  ) %>% factor(levels=c("none", "GENCODE", "UTRome", "both"))) %>%
+  ggplot(aes(x=-log10(pval_GENCODE), y=-log10(pval_UTRome))) +
+  geom_point(aes(color=sig_label), size=0.1) +
+  geom_abline(slope=1, linetype='dashed', color='grey20', linewidth=0.5) +
+  #lims(x=c(0,1), y=c(0,1)) +
+  coord_equal() +
+  guides(color = guide_legend(override.aes = list(size=4))) +
+  labs(x="-log10(pvalue) (GENCODE)",
+       y="-log10(pvalue) (UTRome)",
+       color="qvalue < 0.05") +
+  theme_bw()
+```
+
+---
+
+# Session Info
+
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```

@@ -23,6 +23,7 @@ library(magrittr)
 library(cowplot)
 library(ggalluvial)
 library(pheatmap)
+library(ggbeeswarm)
 ```
 
 ## Parameters
@@ -62,8 +63,8 @@ make_cluster_df <- function (cr, sq, idx_cr=NULL, idx_sq=NULL) {
     sq <- fct_recode(sq, !!!setNames(as.character(idx_sq),levels(sq)))
   }
   tibble(cell=seq_along(cr), 
-         CellRanger=as.character(cr),
-         scUTRquant=as.character(sq)) %>%
+         CellRanger=factor(cr, levels=sort(as.numeric(unique(cr)))),
+         scUTRquant=factor(sq, levels=sort(as.numeric(unique(sq))))) %>%
     pivot_longer(-1, names_to="method", values_to="cluster")
 }
 ```
@@ -106,6 +107,23 @@ df_clusters %>%
   knitr::kable()
 ```
 
+### ARI Bar
+```{r ari_bar, fig.width=2, fig.height=4}
+n_lab <- sprintf("N = %d", nrow(df_clusters))
+
+df_clusters %>%
+  ggplot(aes(x=n_lab, y=ari)) + 
+  stat_summary(fun='mean', geom='bar', width=0.4, fill='lightgrey', color='black') +
+  stat_summary(fun.data=mean_se, geom='errorbar', width=0.3) +
+  geom_quasirandom(width=0.1, size=1) +
+  scale_y_continuous(limits=c(0,1), expand=expansion(add=c(0,0))) +
+  labs(x=NULL, y="Adjusted Rand Index") +
+  theme_bw()
+
+ggsave("output/figure1/sup1D-clusters-ari.pdf", 
+       width=2, height=4, dpi=300)
+```
+
 ## Raw Cluster Plots
 ```{r raw_clusters, fig.width=5, fig.height=4}
 plotCols <- colorRampPalette(RColorBrewer::brewer.pal(9, "Blues")[1:7])(10)
@@ -133,8 +151,8 @@ for (i in seq(nrow(df_clusters))) {
 ```
 
 ```{r ordered_1, fig.width=5, fig.height=4}
-idx_row <- c(8,3,4,7,5,2,6,1)
-idx_col <- c(4,3,2,9,5,7,1,6,8)
+idx_row <- c(7,2,4,3,5,6,1,8,9)
+idx_col <- c(7,2,4,3,5,6,1,8,9)
 tbl <- df_clusters$table[[1]]
 t(tbl[idx_row, idx_col]) %>%
   plot_cluster_areas(show_values=FALSE) %>%
@@ -142,26 +160,12 @@ t(tbl[idx_row, idx_col]) %>%
   print
 ```
 
-```{r ordered_2, fig.width=5, fig.height=4}
-idx_row <- seq(8)
-idx_col <- seq(9)
-tbl <- df_clusters$table[[1]]
-tbl[idx_row, idx_col] %>% {
-  tibble(x=rep(cumsum(colSums(.)) - 0.5*sum(.[,1]), each=nrow(.)),
-         y=rep(cumsum(rowSums(.)) - 0.5*sum(.[1,]), times=ncol(.)),
-         height=rep(rowSums(.), times=ncol(.)),
-         width=rep(colSums(.), each=nrow(.)),
-         values=as.vector(./rowSums(.)))
-}
-  
-```
 
-
-```{r plot_alluvial_default, fig.width=4, fig.height=4}
+```{r plot_alluvial_default_1, fig.width=4, fig.height=4}
 df_clusters[1,] %>%
   { make_cluster_df(cr=.$clusters_10x[[1]], sq=.$clusters_sq[[1]],
-                    idx_cr=c(2,3,8,6,4,7,5,1),
-                    idx_sq=c(1,2,3,4,6,9,5,7,8)) } %>%
+                    idx_cr=c(7,2,4,3,5,6,1,8,9),
+                    idx_sq=c(7,2,4,3,5,6,1,8,9)) } %>%
 
   ggplot(aes(x=method, stratum=cluster, alluvium=cell, label=cluster)) +
   geom_flow(aes(fill=cluster), width=0.2, ) +
@@ -180,8 +184,8 @@ set.seed(3)
 colors <- sample(RColorBrewer::brewer.pal(11, 'BrBG')[c(1:4,7:11)])
 df_clusters[1,] %>%
   { make_cluster_df(cr=.$clusters_10x[[1]], sq=.$clusters_sq[[1]],
-                    idx_cr=c(2,3,8,6,4,7,5,1),
-                    idx_sq=c(1,2,3,4,6,9,5,7,8)) } %>%
+                    idx_cr=c(7,2,4,3,5,6,1,8,9),
+                    idx_sq=c(7,2,4,3,5,6,1,8,9)) } %>%
 
   ggplot(aes(x=method, stratum=cluster, alluvium=cell, label=cluster)) +
   geom_flow(aes(fill=cluster), width=0.2) +
@@ -202,8 +206,8 @@ ggsave("output/figure1/fig1D-clusters-alluvial-heart_1k_v2_fastq-BrBG.pdf",
 ```{r plot_alluvial_spectral, fig.width=5, fig.height=5}
 df_clusters[1,] %>%
   { make_cluster_df(cr=.$clusters_10x[[1]], sq=.$clusters_sq[[1]],
-                    idx_cr=c(2,3,8,6,4,7,5,1),
-                    idx_sq=c(1,2,3,4,6,9,5,7,8)) } %>%
+                    idx_cr=c(7,2,4,3,5,6,1,8,9),
+                    idx_sq=c(7,2,4,3,5,6,1,8,9)) } %>%
 
   ggplot(aes(x=method, stratum=cluster, alluvium=cell, label=cluster)) +
   geom_flow(aes(fill=cluster), alpha=0.45, width=0.2) +
@@ -219,6 +223,61 @@ df_clusters[1,] %>%
 ggsave("output/figure1/fig1D-clusters-alluvial-heart_1k_v2_fastq-spectral.pdf", 
        width=5, height=5, dpi=300)
 ```
+
+## heart_1k_v3
+```{r ordered_2, fig.width=5, fig.height=4}
+idx_row <- c(1,2,3,4,5,11,6,7,9,8,10,12,13,14)
+idx_col <- c(1,2,3,4,5,6,7,9,8,10,11,12,13)
+tbl <- df_clusters$table[[2]]
+t(tbl[idx_row, idx_col]) %>%
+  plot_cluster_areas(show_values=FALSE) %>%
+  { . + labs(title=paste(df_clusters$sample_id[[2]], "Clusters")) } %>%
+  print
+  
+```
+
+```{r plot_alluvial_default_2, fig.width=5, fig.height=5}
+df_clusters[2,] %>%
+  { make_cluster_df(cr=.$clusters_10x[[1]], sq=.$clusters_sq[[1]],
+                    idx_cr=c(1,2,3,4,5,11,6,7,9,8,10,12,13,14),
+                    idx_sq=c(1,2,3,4,5,6,7,9,8,10,11,12,13)) } %>%
+
+  ggplot(aes(x=method, stratum=cluster, alluvium=cell, label=cluster)) +
+  geom_flow(aes(fill=cluster), width=0.2, ) +
+  geom_stratum(fill='lightgrey', alpha=0.5, width=0.2) +
+  geom_text(stat='stratum') +
+  scale_x_discrete(limits = c("CellRanger", "scUTRquant"), expand = c(0.1, 0.1)) +
+  scale_fill_manual(values=colorRampPalette(palette.colors(9))(14)) +
+  labs(x="Method", y="Cells") +
+  guides(fill=FALSE) +
+  theme_cowplot()
+
+ggsave("output/figure1/fig1D-clusters-alluvial-heart_1k_v3_fastq-default.pdf", 
+       width=5, height=5, dpi=300)
+```
+
+
+```{r plot_alluvial_spectral_2, fig.width=5, fig.height=5}
+colors <- colorRampPalette(RColorBrewer::brewer.pal(10, 'Spectral')[c(1:5,7:10)])(14)
+df_clusters[2,] %>%
+  { make_cluster_df(cr=.$clusters_10x[[1]], sq=.$clusters_sq[[1]],
+                    idx_cr=c(1,2,3,4,5,11,6,7,9,8,10,12,13,14),
+                    idx_sq=c(1,2,3,4,5,6,7,9,8,10,11,12,13)) } %>%
+
+  ggplot(aes(x=method, stratum=cluster, alluvium=cell, label=cluster)) +
+  geom_flow(aes(fill=cluster), width=0.2, ) +
+  geom_stratum(fill='lightgrey', alpha=0.5, width=0.2) +
+  geom_text(stat='stratum') +
+  scale_x_discrete(limits = c("CellRanger", "scUTRquant"), expand = c(0.1, 0.1)) +
+  scale_fill_manual(values=colors) +
+  labs(x="Method", y="Cells") +
+  guides(fill=FALSE) +
+  theme_cowplot()
+
+ggsave("output/figure1/fig1D-clusters-alluvial-heart_1k_v3_fastq-spectral.pdf", 
+       width=5, height=5, dpi=300)
+```
+
 
 ---
 

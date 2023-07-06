@@ -27,7 +27,7 @@ library(scutrboot)
 
 ## Parameters
 ```{r set_params}
-set.seed(20211017)
+set.seed(20230522)
 N_BOOTSTRAPS=10000
 MIN_NCELLS=50
 ```
@@ -38,7 +38,7 @@ MIN_NCELLS=50
 plot_pval_histogram <- function (df) {
   ggplot(df, aes(x=pval)) +
     geom_histogram(boundary=0, bins=41, 
-                   color='black', fill='lightgrey', size=0.2) +
+                   color='black', fill='lightgrey', linewidth=0.2) +
     scale_x_continuous(expand=c(0.02,0.02)) +
     scale_y_continuous(expand=c(0,0,0,100)) +
     labs(x="p-values", y="Genes") +
@@ -55,8 +55,16 @@ sce <- readRDS("data/sce/hspcs.txs.full_annot.Rds")
 ## Preprocessing
 ```{r prepare_data}
 sce %<>% `[`(!rowData(.)$is_blacklisted,)
-idx_multi <- rowData(sce)$atlas.utr_type == 'multi'
+#idx_multi <- rowData(sce)$atlas.utr_type == 'multi'
+idx_multi <- rowData(sce) %>% as_tibble %>%
+  filter(atlas.utr_type == 'multi', atlas.ncelltypes_utr > 0, !is_ipa) %>%
+  add_count(gene_id, name='n_utrs') %>%
+  filter(n_utrs > 1) %$%
+  { rownames(sce) %in% transcript_id }
+
 idx_consistent <- rowData(sce)$is_consistent
+
+gene_id2name <- rowData(sce) %>% as_tibble %>% pull(gene_name, name=gene_id)
 ```
 
 # Analysis
@@ -72,7 +80,9 @@ df_test_ery_hsc_wd <- testTwoSample(sce[idx_multi,], assayName="normcounts",
                                     featureExclude="is_ipa", 
                                     ) %>%
   as_tibble() %>%
-  mutate(qval=p.adjust(pval, method="BH"))
+  mutate(gene_name=gene_id2name[gene],
+         qval=p.adjust(pval, method="BH")) %>%
+  select(gene_name, everything())
 ```
 
 ### P-Values Plot
@@ -100,7 +110,9 @@ df_test_ery_hsc_lui <- testTwoSample(sce[idx_multi & idx_consistent,], assayName
                                     minCellsPerGene=MIN_NCELLS, 
                                     featureExclude="is_ipa") %>%
   as_tibble() %>%
-  mutate(qval=p.adjust(pval, method="BH"))
+  mutate(gene_name=gene_id2name[gene],
+         qval=p.adjust(pval, method="BH")) %>%
+  select(gene_name, everything())
 ```
 
 ### P-Values Plot
@@ -115,6 +127,47 @@ ggsave("output/figure4/sup-pvals-ery-hsc-lui.pdf", width=4, height=2, dpi=300)
 sprintf("data/dtu/%s-hsc-ery-twosample-lui.min50.boot10k.tsv.gz", 
         format(Sys.time(), '%Y%m%d')) %>%
   write_tsv(x=df_test_ery_hsc_lui)
+```
+
+## WUI Test: Ery vs HSC
+
+```{r test_ery_hsc_wui}
+sce_subset <- sce[idx_multi,]
+
+rowData(sce_subset) %<>% as_tibble() %>%
+  group_by(gene_id) %>%
+  mutate(utr_rank=rank(utr_position),
+         utr_wt=(utr_rank - 1)/(max(utr_rank) - 1)) %>%
+  ungroup() %>%
+  as.data.frame() %>%
+  DataFrame(row.names=.$transcript_id) %T>%
+  { stopifnot(all(rownames(.) == rownames(sce_subset))) }
+
+df_test_ery_hsc_wui <- testTwoSample(sce_subset, assayName="normcounts",
+                                    sampleKey="clusters", geneKey="gene_id",
+                                    sample0="14/Stem", sample1="12/Ery", 
+                                    statistic="WUI", featureIndex="utr_wt",
+                                    nBootstraps=N_BOOTSTRAPS, 
+                                    minCellsPerGene=MIN_NCELLS, 
+                                    featureExclude="is_ipa") %>%
+  as_tibble() %>%
+  mutate(gene_name=gene_id2name[gene],
+         qval=p.adjust(pval, method="BH")) %>%
+  select(gene_name, everything())
+```
+
+### P-Values Plot
+```{r plot_pvals_wui, fig.width=4, fig.height=2}
+plot_pval_histogram(df_test_ery_hsc_wui)
+
+ggsave("output/figure4/sup-pvals-ery-hsc-wui.pdf", width=4, height=2, dpi=300)
+```
+
+### Export
+```{r export_wui}
+sprintf("data/dtu/%s-hsc-ery-twosample-wui.min50.boot10k.tsv.gz", 
+        format(Sys.time(), '%Y%m%d')) %>%
+  write_tsv(x=df_test_ery_hsc_wui)
 ```
 
 ## IPA Test: Ery vs HSC
@@ -136,7 +189,9 @@ df_test_ery_hsc_ipa <- testTwoSample(sce[idx_ipa,], assayName="normcounts",
                                     nBootstraps=N_BOOTSTRAPS, 
                                     minCellsPerGene=MIN_NCELLS) %>%
   as_tibble() %>%
-  mutate(qval=p.adjust(pval, method="BH"))
+  mutate(gene_name=gene_id2name[gene],
+         qval=p.adjust(pval, method="BH")) %>%
+  select(gene_name, everything())
 ```
 
 ### P-Values Plot

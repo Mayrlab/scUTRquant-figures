@@ -1,0 +1,188 @@
+---
+title: "IPA Genes - Human Atlas"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+Classify genes according to usage of intronic polyadenylation (IPA) sites across
+atlas of human cell types.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(matrixStats)
+library(SingleCellExperiment)
+```
+
+## Parameters
+```{r set_params}
+MIN_NCELLS=50
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+sce <- readRDS("data/sce/utrome_hg38_v1/tsapiens.txs.full_annot.Rds")
+```
+
+## Preprocessing
+```{r prepare_data}
+## M: (cells) x (tissue, cell_type)
+M_cell_celltype <- colData(sce)[,c('organ_tissue', 'cell_ontology_class')] %>%
+  as.data.frame() %>%
+  mutate(group=paste(str_replace_all(organ_tissue, "_", " "),
+                     cell_ontology_class, sep=', ')) %>%
+    pull(group) %>%
+    fac2sparse() %>%
+    t()
+
+M_gene_tx <- rowData(sce)$gene_id %>% fac2sparse()
+
+ncells_gene_celltype <- ((M_gene_tx %*% assay(sce, "normcounts")) > 0) %*% M_cell_celltype
+cts_tx_celltype <- assay(sce, "normcounts") %*% M_cell_celltype
+cts_gene_celltype <- M_gene_tx %*% cts_tx_celltype
+
+idx_below_min <- (t(M_gene_tx) %*% ncells_gene_celltype) < MIN_NCELLS
+pct_tx_celltype <- cts_tx_celltype / (t(M_gene_tx) %*% cts_gene_celltype)
+
+pct_tx_celltype_filtered <- pct_tx_celltype
+pct_tx_celltype_filtered[idx_below_min] <- NA
+ncelltypes_pct05 <- rowSums(pct_tx_celltype_filtered >= 0.05, na.rm=TRUE)
+ncelltypes_pct10 <- rowSums(pct_tx_celltype_filtered >= 0.10, na.rm=TRUE)
+
+cts_tx <- rowSums(assay(sce, 'normcounts'))
+cts_tx_gene <- as.numeric(t(M_gene_tx) %*% M_gene_tx %*% cts_tx)
+pct_tx <- as.numeric(cts_tx / cts_tx_gene)
+
+df_txs <- rowData(sce) %>%
+  as_tibble() %>%
+  mutate(ncelltypes_pct05=ncelltypes_pct05[transcript_id],
+         ncelltypes_pct10=ncelltypes_pct10[transcript_id],
+         cts_total_gene=cts_tx_gene,
+         pct_total=pct_tx)
+```
+
+# Analysis
+
+## Compute Usage Across Cell Types
+
+```{r compute_usage}
+df_ipa <- df_txs %>%
+  group_by(gene_id) %>%
+  mutate(is_detected=any(ncelltypes_pct05 > 0),
+         has_ipa_pct05=any(is_ipa & ncelltypes_pct05 > 0),
+         has_ipa_pct10=any(is_ipa & ncelltypes_pct10 > 0)) %>%
+  ungroup()
+```
+
+## IPA - 5% Cell Type
+
+```{r fig_pct_05, fig.width=3, fig.height=3}
+df_nipa <- df_ipa %>%
+  group_by(gene_id) %>%
+  filter(atlas.ncelltypes_gene > 0) %>%
+  summarize(n_ipa=sum(is_ipa & ncelltypes_pct05 > 0)) %>%
+  mutate(n_ipa_label=ifelse(n_ipa >= 5, "5+", as.character(n_ipa)))
+
+df_nipa_counts <- df_nipa %>%
+  group_by(n_ipa_label) %>%
+  summarize(n=n())
+
+ggplot(df_nipa, aes(x=n_ipa_label)) +
+  geom_histogram(stat='count', fill='lightgrey', color='black') +
+  geom_text(data=df_nipa_counts, mapping=aes(label=n, y=n+500)) +
+  #scale_x_continuous(breaks=0:8) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  labs(x="IPA Isoform Count", y="Number of Genes") +
+  guides(fill=FALSE) +
+  theme_minimal_hgrid()
+```
+
+## IPA - 10% Cell Type
+
+```{r fig_pct_10, fig.width=3, fig.height=3}
+df_nipa <- df_ipa %>%
+  filter(atlas.ncelltypes_gene > 0) %>%
+  group_by(gene_id) %>%
+  summarize(n_ipa=sum(is_ipa & ncelltypes_pct10 > 0)) %>%
+  mutate(n_ipa_label=ifelse(n_ipa >= 5, "5+", as.character(n_ipa)))
+
+df_nipa_counts <- df_nipa %>%
+  group_by(n_ipa_label) %>%
+  summarize(n=n())
+
+ggplot(df_nipa, aes(x=n_ipa_label)) +
+  geom_histogram(stat='count', fill='lightgrey', color='black') +
+  geom_text(data=df_nipa_counts, mapping=aes(label=n, y=n+500)) +
+  #scale_x_continuous(breaks=0:8) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  labs(x="IPA Isoform Count", y="Number of Genes") +
+  guides(fill=FALSE) +
+  theme_minimal_hgrid()
+
+ggsave("output/figure3/fig3b-n-ipa-isoforms-pct10.human.pdf", width=4, height=4, dpi=300)
+```
+
+
+# Cell Types Expressing
+## Grouped Bins
+### Custom 5
+```{r grouped_bins_5, fig.width=4.5, fig.height=4}
+df_binned <- df_ipa %>%
+  filter(atlas.ncelltypes_gene > 0) %>%
+  group_by(gene_id) %>%
+  summarize(ipa=any(has_ipa_pct10), 
+            n_celltypes=dplyr::first(atlas.ncelltypes_gene)) %>%
+  mutate(n_celltypes_bin=cut(n_celltypes, 
+                             breaks=c(0,2.5, 25.5, 50.5, 150.5, 300.5, 400),
+                             labels=c("1-2", "3-25", "26-50", "51-150", "151-300", "301+")))
+
+
+## Filled Bars
+df_binned %>%
+  ggplot(aes(x=n_celltypes_bin, fill=ipa)) +
+  geom_bar(position='fill') +
+  geom_text(aes(label=..count..), stat="count", position=position_fill(vjust=0.5)) +
+  scale_fill_manual(values=c("lightgrey", "#6E90BB")) +
+  scale_y_continuous(labels=scales::percent_format(), expand=rep(0,4)) +
+  labs(x="Number of Cell Types Expressing",
+       y="Genes", fill="IPA") +
+  theme_bw()
+
+ggsave("output/figure3/fig3d-ncelltypes-gene-ipa-pct10.filled-bars.human.pdf", width=4, height=4, dpi=300)
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

@@ -20,7 +20,6 @@ expression testing versus differential isoform usage testing.
 ```{r libs, message=FALSE, warning=FALSE}
 library(magrittr)
 library(tidyverse)
-library(cowplot)
 ```
 
 ## Parameters
@@ -28,16 +27,29 @@ library(cowplot)
 MAX_QVAL=0.05
 MIN_L2FC=log2(1.5)
 MIN_DLUI=0.15
+MIN_NCELLS=50
+
+## INPUTS
+TSV_DTU="data/dtu/20211117-hsc-ery-twosample-lui.min50.boot10k.tsv.gz"
+TSV_DGE="data/dge/20221222-ery-trajectory-pairwise-t-tests.tsv.gz"
+TSV_ANNOTS="data/utrs/utrome_genes_annotation.tsv"
+TSV_NCELLS="data/utrs/n_cells_genes.tsv"
+
+## OUTPUTS
+PDF_BACKGROUND="output/figure4/sup-single-vs-multi-ncelltypes.pdf"
+PDF_ALL_SIG="output/figure4/sup-sig-dge-vs-dtu-ncelltypes-all.pdf"
+PDF_MULTI_SIG="output/figure4/sup-sig-dge-vs-dtu-ncelltypes-multi.pdf"
 ```
 
 # Data
 ## Loading
 ```{r load_data, message=FALSE}
-df_dtu <- read_tsv("data/dtu/20211117-hsc-ery-twosample-lui.min50.boot10k.tsv.gz",
-                   col_types='cddid') %>%
-  dplyr::rename(gene_id=gene)
-df_dge <- read_tsv("data/dge/20211026-ery-trajectory-pairwise-t-tests.tsv.gz",
-                   col_types='ccccddd')
+df_dtu <- read_tsv(TSV_DTU, col_types='cddid') %>% dplyr::rename(gene_id=gene)
+df_dge <- read_tsv(TSV_DGE, col_types='ccccddd')
+df_annots <- read_tsv(TSV_ANNOTS)
+mat_ncells <- read_tsv(TSV_NCELLS) %>%
+  column_to_rownames("gene_id") %>%
+  as.matrix()
 ```
 
 ## Preprocessing
@@ -53,6 +65,10 @@ df_sig_dge <- df_dge %>%
          sig_gene=qval < MAX_QVAL & abs(log2FC) >= MIN_L2FC) %>%
   group_by(gene_id) %>%
   summarize(sig_gene=any(sig_gene))
+
+df_utr <- mat_ncells %>%
+  { tibble(gene_id=rownames(.), n_celltypes=rowSums(. >= MIN_NCELLS))} %>%
+  inner_join(select(df_annots, gene_id, atlas.utr_type), by="gene_id")
 ```
 
 
@@ -75,6 +91,52 @@ df_sig_multi %$%
   table(sig_gene, sig_isoform) %T>%
   print() %>%
   chisq.test()
+```
+
+# Number of Cell Types
+```{r tbl_ncells}
+df_ncelltypes <- inner_join(df_sig_all, df_utr, by="gene_id") %>%
+  pivot_longer(cols=c("sig_isoform", "sig_gene"), names_prefix="sig_", names_to="test", values_to="sig") %>%
+  mutate(test=c("isoform"="DTU", "gene"="DGE")[test])
+```
+
+## Single vs Multi-UTR (All Expressed Genes)
+```{r plt_ncells_all, fig.width=2, fig.height=4}
+df_ncelltypes %>%
+  distinct(gene_id, atlas.utr_type, n_celltypes) %>%
+  mutate(atlas.utr_type=factor(atlas.utr_type, levels=c("single", "multi"))) %>%
+  filter(n_celltypes > 0) %>%
+  ggplot(aes(x=atlas.utr_type, y=n_celltypes)) +
+  geom_boxplot() +
+  labs(x="UTR Type", y="Number of Cell Types") +
+  theme_bw()
+
+ggsave(PDF_BACKGROUND, width=2, height=4, dpi=300)
+```
+
+## All Significant Genes
+```{r plt_ncells_all_sig, fig.width=2, fig.height=4}
+df_ncelltypes %>%
+  filter(sig) %>%
+  ggplot(aes(x=test, y=n_celltypes)) +
+  geom_boxplot() +
+  labs(x="Significance Test", y="Number of Cell Types") +
+  theme_bw()
+
+ggsave(PDF_ALL_SIG, width=2, height=4, dpi=300)
+```
+
+
+## Significant Multi-UTR Genes
+```{r plt_ncells_multi_sig, fig.width=2, fig.height=4}
+df_ncelltypes %>%
+  filter(sig, atlas.utr_type == 'multi') %>%
+  ggplot(aes(x=test, y=n_celltypes)) +
+  geom_boxplot() +
+  labs(x="Significance Test", y="Number of Cell Types") +
+  theme_bw()
+
+ggsave(PDF_MULTI_SIG, width=2, height=4, dpi=300)
 ```
 
 

@@ -29,8 +29,14 @@ library(ggrastr)
 set.seed(20211017)
 MIN_DIPA=0.15
 MIN_DLUI=0.15
+MIN_DWUI=0.10
 MIN_WD=0.15
 MAX_QVAL=0.05
+
+TSV_WD_TEST="data/dtu/20230530-hsc-ery-twosample-wd.min50.boot10k.tsv.gz"
+TSV_WUI_TEST="data/dtu/20230530-hsc-ery-twosample-wui.min50.boot10k.tsv.gz"
+TSV_LUI_TEST="data/dtu/20230530-hsc-ery-twosample-lui.min50.boot10k.tsv.gz"
+TSV_IPA_TEST="data/dtu/20230530-hsc-ery-twosample-ipa.min50.boot10k.tsv.gz"
 ```
 
 ## Functions
@@ -60,6 +66,47 @@ luiVolcanoPlot <- function (df, max_q=0.05, min_dlui=0.1, max_dlui=0.5, legend=T
     scale_shape_manual(values=c("FALSE"=16, "TRUE"=17)) +
     scale_size_manual(values=c(0.3, 0.3, 0.3, 1.2, 0.3, 1.2)) +
     labs(x="dLUI", 
+         y="-log10(p-value)", color="Significance\n (BH Adjusted)") +
+    theme(legend.title.align=0.5) + 
+    guides(shape=FALSE) +
+    theme_cowplot()
+  
+  if (!legend) {
+    pmain <- pmain + guides(color=FALSE, size=FALSE)
+  }
+  
+  xdens <- axis_canvas(pmain, axis='x') + 
+    geom_density(data=df, aes(x=stat, fill=sig), alpha=0.7, size=0.2) +
+    scale_fill_manual(values=c("black", "#958DBE"))
+  
+  insert_xaxis_grob(pmain, xdens, grid::unit(0.2, 'null'), position='top') %>% 
+    ggdraw()
+}
+
+wuiVolcanoPlot <- function (df, max_q=0.05, min_dwui=0.1, max_dwui=0.5, legend=TRUE) {
+  df %<>% 
+    mutate(sig=ifelse(qval < max_q, sprintf("q < %0.2f", max_q), "NS")) %>%
+    mutate(size_effect=ifelse(abs(stat) < min_dwui, 
+                              sprintf("|dWUI| < %0.2f", min_dwui),
+                              ifelse(stat < 0, 
+                              sprintf("dWUI < -%0.2f", min_dwui),
+                              sprintf("dWUI > %0.2f", min_dwui)))) %>%
+    mutate(sig_size=paste(size_effect, sig, sep=", ")) %>%
+    mutate(outlier=abs(stat) > max_dwui,
+           stat_adj=ifelse(outlier, sign(stat)*max_dwui, stat))
+  
+  pmain <- df %>% 
+    ggplot(aes(x=stat_adj, y=-log10(pval))) +
+    rasterize(geom_point(aes(color=sig_size, shape=outlier, size=sig_size)), dpi=300) +
+    geom_vline(xintercept=min_dwui*c(-1,1), 
+               linetype='dashed', size=0.5, color="darkgrey") +
+    scale_color_manual(values=c("grey", "#958DBE", "darkgrey", 
+                                "#3F6CA5", "darkgrey", "#C63732")) +
+    scale_x_continuous(breaks=scales::pretty_breaks(6), 
+                       limits=max_dwui*c(-1,1)) +
+    scale_shape_manual(values=c("FALSE"=16, "TRUE"=17)) +
+    scale_size_manual(values=c(0.3, 0.3, 0.3, 1.2, 0.3, 1.2)) +
+    labs(x="dWUI", 
          y="-log10(p-value)", color="Significance\n (BH Adjusted)") +
     theme(legend.title.align=0.5) + 
     guides(shape=FALSE) +
@@ -154,9 +201,10 @@ wdVolcanoPlot <- function (df, max_q=0.05, min_wd=0.1, max_wd=0.5, legend=TRUE) 
 # Data
 ## Loading
 ```{r load_data, message=FALSE}
-df_test_ery_hsc_wd <- read_tsv("data/dtu/20211117-hsc-ery-twosample-wd.min50.boot10k.tsv.gz")
-df_test_ery_hsc_lui <- read_tsv("data/dtu/20211117-hsc-ery-twosample-lui.min50.boot10k.tsv.gz")
-df_test_ery_hsc_ipa <- read_tsv("data/dtu/20211117-hsc-ery-twosample-ipa.min50.boot10k.tsv.gz")
+df_test_ery_hsc_wd <- read_tsv(TSV_WD_TEST)
+df_test_ery_hsc_wui <- read_tsv(TSV_WUI_TEST)
+df_test_ery_hsc_lui <- read_tsv(TSV_LUI_TEST)
+df_test_ery_hsc_ipa <- read_tsv(TSV_IPA_TEST)
 ```
 
 # Analysis
@@ -171,13 +219,43 @@ df_test_ery_hsc_wd %>%
 
 ### Volcano Plot
 ```{r plot_volcano_wd, fig.width=7, fig.height=5}
-wdVolcanoPlot(df_test_ery_hsc_wd, max_q=0.05, min_wd=0.15)
+wdVolcanoPlot(df_test_ery_hsc_wd, max_q=MAX_QVAL, min_wd=MIN_WD)
 ```
 
 ```{r plot_volcano_wd_save, fig.width=5, fig.height=5}
-wdVolcanoPlot(df_test_ery_hsc_wd, max_q=0.05, min_wd=0.15, legend=FALSE)
+wdVolcanoPlot(df_test_ery_hsc_wd, max_q=MAX_QVAL, min_wd=MIN_WD, legend=FALSE)
 ggsave("output/figure4/fig4c-ery-hsc-wd-volcano.pdf", width=5, height=5, dpi=300)
 ```
+
+## WUI Test: Ery vs HSC
+### Significant Genes
+```{r sig_wui}
+df_test_ery_hsc_wui %>%
+  mutate(sig_gene=qval < MAX_QVAL & abs(stat) >= MIN_DWUI,
+         direction=sign(stat)) %$%
+  table(sig_gene, direction)
+```
+
+### Significant Genes, By Effect
+```{r sig_wui_effect}
+df_test_ery_hsc_wui %>%
+  mutate(sig=qval < MAX_QVAL,
+         abs_dwui=ifelse(abs(stat) < MIN_DWUI, 
+                         sprintf("< %0.2f", MIN_DWUI), 
+                         sprintf(">= %0.2f", MIN_DWUI))) %$%
+  table(sig, abs_dwui)
+```
+
+### Volcano Plot
+```{r plot_volcano_wui, fig.width=7, fig.height=5}
+wuiVolcanoPlot(df_test_ery_hsc_wui, max_q=MAX_QVAL, min_dwui=MIN_DWUI)
+```
+
+```{r plot_volcano_wui_save, fig.width=5, fig.height=5}
+wuiVolcanoPlot(df_test_ery_hsc_wui, max_q=MAX_QVAL, min_dwui=MIN_DWUI, legend=FALSE)
+ggsave("output/figure4/fig4c-ery-hsc-wui-volcano.pdf", width=5, height=5, dpi=300)
+```
+
 
 ## LUI Test: Ery vs HSC
 ### Significant Genes
@@ -198,11 +276,11 @@ df_test_ery_hsc_lui %>%
 
 ### Volcano Plot
 ```{r plot_volcano_lui, fig.width=7, fig.height=5}
-luiVolcanoPlot(df_test_ery_hsc_lui, max_q=0.05, min_dlui=0.15)
+luiVolcanoPlot(df_test_ery_hsc_lui, max_q=MAX_QVAL, min_dlui=MIN_DLUI)
 ```
 
 ```{r plot_volcano_lui_save, fig.width=5, fig.height=5}
-luiVolcanoPlot(df_test_ery_hsc_lui, max_q=0.05, min_dlui=0.15, legend=FALSE)
+luiVolcanoPlot(df_test_ery_hsc_lui, max_q=MAX_QVAL, min_dlui=MIN_DLUI, legend=FALSE)
 ggsave("output/figure4/fig4c-ery-hsc-lui-volcano.pdf", width=5, height=5, dpi=300)
 ```
 
@@ -218,11 +296,11 @@ df_test_ery_hsc_ipa %>%
 
 ### Volcano Plot
 ```{r plot_volcano_ipa, fig.width=7, fig.height=5}
-ipaVolcanoPlot(df_test_ery_hsc_ipa, max_q=0.05, min_dipa=0.15)
+ipaVolcanoPlot(df_test_ery_hsc_ipa, max_q=MAX_QVAL, min_dipa=MIN_DIPA)
 ```
 
 ```{r plot_volcano_ipa_save, fig.width=5, fig.height=5}
-ipaVolcanoPlot(df_test_ery_hsc_ipa, max_q=0.05, min_dipa=0.15, legend=FALSE)
+ipaVolcanoPlot(df_test_ery_hsc_ipa, max_q=MAX_QVAL, min_dipa=MIN_DIPA, legend=FALSE)
 ggsave("output/figure4/fig4c-ery-hsc-ipa-volcano.pdf", width=5, height=5, dpi=300)
 ```
 

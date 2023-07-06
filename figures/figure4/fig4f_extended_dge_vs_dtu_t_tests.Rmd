@@ -28,21 +28,24 @@ library(cowplot)
 ```{r set_params}
 MAX_QVAL=0.05
 MIN_L2FC=log2(1.5)
-MIN_WD=0.15
+MIN_DWUI=0.10
+
+TEST_DTU="data/dtu/20230523-diff-pairwise-wui-tests.min50.boot10k.tsv.gz"
+TEST_DGE="data/dge/20230530-diff-pairwise-t-tests.tsv.gz"
 ```
 
 # Data
 ## Loading
 ```{r load_data, message=FALSE}
-df_dtu <- read_tsv("data/dtu/20211026-diff-pairwise-wd-tests.min50.boot10k.tsv.gz") %>%
+df_dtu <- read_tsv(TEST_DTU) %>%
   dplyr::rename(gene_id=gene)
-df_dge <- read_tsv("data/dge/20211026-diff-pairwise-t-tests.tsv.gz")
+df_dge <- read_tsv(TEST_DGE)
 ```
 
 ## Preprocessing
 ```{r prepare_data}
 df_sig_dtu <- df_dtu %>%
-  mutate(sig_isoform=qval < MAX_QVAL & abs(stat) >= MIN_WD) %>%
+  mutate(sig_isoform=qval < MAX_QVAL & abs(stat) >= MIN_DWUI) %>%
   select(gene_id, start, end, sig_isoform)
 
 df_sig_dge <- df_dge %>%
@@ -107,10 +110,27 @@ ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-all.pdf", width=6, heigh
 
 ## Table 
 ```{r tbl_all_genes}
-df_sig_all %>%
+map_sig <- c("FALSE_FALSE"="NS",
+             "FALSE_TRUE"="DTU",
+             "TRUE_FALSE"="DGE",
+             "TRUE_TRUE"="Both")
+
+df_wide_all <- df_sig_all %>%
   group_by(start, end) %>%
   dplyr::count(sig_gene, sig_isoform) %>%
-  knitr::kable()
+  mutate(result=map_sig[str_c(sig_gene,sig_isoform, sep="_")]) %>%
+  ungroup() %>%
+  pivot_wider(id_cols=c("start", "end"), names_from="result", values_from="n", values_fill=0L) %>%
+  mutate("All genes"=NS+DTU+DGE+Both) %>%
+  dplyr::rename("Cell Type 1"=start, "Cell Type 2"=end) %>%
+  select(`Cell Type 1`, `Cell Type 2`, NS:Both)
+
+knitr::kable(df_wide_all)
+```
+
+## Export Table
+```{r export_tbl_all}
+write_xlsx(df_wide_all, "output/tables/sup-tbl3-extended-celltypes-chisq-results-t-tests-all.xlsx")
 ```
 
 # Multi-UTR Genes
@@ -191,10 +211,10 @@ df_wide <- df_sig_multi %>%
   pivot_wider(id_cols=c("start", "end"), names_from="result", values_from="n", values_fill=0L) %>%
   mutate("Coexpressed multi-UTR genes"=NS+DTU+DGE+Both) %>%
   left_join(df_chisq, by=c("start", "end")) %>%
-  rename("Cell Type 1"=start,
-         "Cell Type 2"=end,
-         "Chi-squared"=statistic,
-         "p-value"=p.value) %>%
+  dplyr::rename("Cell Type 1"=start,
+                "Cell Type 2"=end,
+                "Chi-squared"=statistic,
+                "p-value"=p.value) %>%
   select(`Cell Type 1`, `Cell Type 2`, `Coexpressed multi-UTR genes`,
          NS:Both, `Chi-squared`, `p-value`)
 
@@ -204,6 +224,53 @@ knitr::kable(df_wide)
 ## Export Table
 ```{r export_tbl}
 write_xlsx(df_wide, "output/tables/tbl3-extended-celltypes-chisq-results-t-tests.xlsx")
+```
+
+# Correlation Analysis
+```{r plot_correlations, fig.width=6, fig.height=3}
+test_lbl_lvls <- c("MEF vs mESC",
+                   "ODC vs mNeur",
+                   "MG vs mNeur",
+                   "Ery vs HSC",
+                   "endo vs mNeur",
+                   "Astro vs mNeur",
+                   "ODC vs OPC",
+                   "Mono vs HSC",
+                   "Neutro vs HSC",
+                   "TraEpi vs TraMes",
+                   "TSpleen vs Timm",
+                   "basMamm vs lumMamm",
+                   "TMamm vs TSpleen", 
+                   "mNeur vs imNeur",
+                   "Baso vs HSC",
+                   "BSpleen vs TSpleen",
+                   "NeurEC vs mNeur")
+
+df_corrs <- left_join(
+  mutate(df_dtu, test_label=str_c(end, " vs ", start), start=NULL, end=NULL),
+  mutate(df_dge, test_label=str_c(end, " vs ", start), start=NULL, end=NULL),
+  by=c("gene_symbol", "gene_id", "test_label"), suffix=c("_dtu", "_dge")) %>%
+  mutate(test_label=fct(test_label, levels=test_lbl_lvls)) %>%
+  group_by(test_label) %>%
+  group_modify(~ broom::tidy(cor.test(.x$stat, .x$log2FC, method="pearson")))
+
+df_corrs %>%
+  ggplot(aes(x=test_label)) +
+  geom_hline(yintercept=0, linetype='dashed', linewidth=0.2) +
+  geom_errorbar(aes(ymin=conf.low, ymax=conf.high), 
+                linewidth=0.5, width=0.5, color='grey60') +
+  geom_point(aes(y=estimate), size=2, color='grey40') +
+  scale_x_discrete(guide=guide_axis(angle=90)) +
+  scale_y_continuous(limits=c(-0.3,0.3)) +
+  labs(x=NULL, y="Pearson Correlation\nlog2(FC) ~ dWUI") +
+  theme_bw()
+
+ggsave("output/figure4/sup3f-celltypes-l2fc-dwui-corrs-multi.pdf", width=6, height=3, dpi=300)
+```
+
+## Export Table
+```{r export_tbl_corrs}
+write_xlsx(df_corrs, "output/tables/tbl3b-extended-celltypes-corrs-results.xlsx")
 ```
 
 ---

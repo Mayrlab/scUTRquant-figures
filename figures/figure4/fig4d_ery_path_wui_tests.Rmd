@@ -1,0 +1,125 @@
+---
+title: "Pairwise WUI Tests - Ery Trajectory"
+author: "Mervin Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_levels: 2
+---
+
+# Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(SingleCellExperiment)
+library(Matrix)
+library(matrixStats)
+library(tidyverse)
+library(magrittr)
+library(cowplot)
+library(ggridges)
+library(BiocParallel)
+library(scutrboot)
+
+register(MulticoreParam(6))
+```
+
+# Load Data
+```{r load_data}
+set.seed(20230515)
+MIN_CELLS=50
+NUM_BOOT=10000
+
+sce <- readRDS("data/sce/hspcs.txs.full_annot.Rds")
+
+celltypes <- c("14/Stem", "0", "3", "10", "8", "13", "11", "12/Ery")
+
+idx_multi <- rowData(sce) %>%
+  { (!.$is_ipa) & (.$is_consistent) & (!.$is_blacklisted) & (.$atlas.utr_type == 'multi') & (.$atlas.ncelltypes_utr > 0) }
+
+idx_multi <- rowData(sce[idx_multi,]) %>% as_tibble() %>%
+  group_by(gene_id) %>%
+  mutate(has_multi=n() > 1) %>%
+  ungroup() %>%
+  filter(has_multi) %>%
+  pull(transcript_id)
+  
+
+# filter to multiutrs in celltypes of interest
+sce %<>% `[`(idx_multi,.$clusters %in% celltypes)
+
+gene_id2sym <- rowData(sce) %>% as_tibble %$% setNames(gene_name, gene_id)
+```
+
+# Two-Sample Tests
+```{r partition_pairs}
+test_pairs <- length(celltypes) %>% { vector("list", .*(.-1)/2) }
+
+k <- 1
+for (i in seq(1, length(celltypes)-1)) {
+  for (j in seq(1, length(celltypes) - i)) {
+    test_pairs[[k]] <- c(celltypes[j], celltypes[i+j])
+    k <- k + 1
+  }
+}
+```
+
+## Compute UTR Weights
+```{r utr_wt}
+rowData(sce) %<>% as_tibble() %>%
+  group_by(gene_id) %>%
+  mutate(utr_rank=rank(utr_position),
+         utr_wt=(utr_rank - 1)/(max(utr_rank) - 1)) %>%
+  ungroup() %>%
+  as.data.frame() %>%
+  DataFrame(row.names=.$transcript_id) %T>%
+  { stopifnot(all(rownames(.) == rownames(sce))) }
+```
+
+
+```{r wui_tests}
+res <- bplapply(test_pairs, function (p) {
+  testTwoSample(sce, assayName="normcounts",
+                sampleKey="clusters", geneKey="gene_id",
+                sample0=p[[1]], sample1=p[[2]], 
+                statistic="WUI", featureIndex="utr_wt",
+                nBootstraps=NUM_BOOT, minCellsPerGene=50) %>%
+    as_tibble() %>%
+    mutate(start=p[[1]], end=p[[2]]) %>%
+    select(gene, start, end, stat, pval, bootstraps)
+})
+
+df_tests <- do.call(rbind, res) %>%
+  mutate(gene_symbol=gene_id2sym[gene]) %>%
+  select(gene_symbol, everything())
+
+df_tests %>% arrange(pval) %>% head(50) %>% knitr::kable()
+```
+
+```{r hist_pvals}
+hist(df_tests$pval, breaks=40, xlab="p-value",
+     main="Distribution of p-values for Two-Sample WUI Tests")
+```
+
+
+```{r hists_by_pair, fig.width=8, fig.height=12}
+df_tests %>%
+  mutate(test_pair=str_c(start, " vs ", end)) %>%
+  ggplot(aes(x=pval, y=test_pair)) +
+  geom_density_ridges(stat='binline', bins=40, scale=0.95) +
+  labs(x="p-value", y=NULL, title="WUI Tests") +
+  theme_minimal_vgrid()
+```
+
+# Export
+```{r export}
+sprintf("data/dtu/%s-ery-trajectory-pairwise-wui-tests.min50.boot10k.tsv.gz", format(Sys.time(), '%Y%m%d')) %>%
+  write_tsv(x=df_tests)
+```
+
+---
+
+# Session Info
+
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```

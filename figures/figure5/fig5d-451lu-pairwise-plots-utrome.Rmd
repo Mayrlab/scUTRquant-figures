@@ -1,0 +1,235 @@
+---
+title: "Melanoma Resistance - 451Lu"
+author: "Mervin Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+Demonstrate the use of scUTRquant and scUTRboot on a human melanoma BRAF 
+inhibitor-resistance dataset.
+
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(cowplot)
+library(ggrastr)
+```
+
+## Parameters
+```{r set_params}
+set.seed(20210818)
+```
+
+## Functions
+
+```{r methods}
+luiVolcanoPlot <- function (df, max_q=0.05, min_dlui=0.1, max_dlui=0.5, legend=TRUE) {
+  df %<>% 
+    mutate(sig=ifelse(qval < max_q, sprintf("q < %0.2f", max_q), "NS")) %>%
+    mutate(size_effect=ifelse(abs(stat) < min_dlui, 
+                              sprintf("|dLUI| < %0.2f", min_dlui),
+                              ifelse(stat < 0, 
+                              sprintf("dLUI < -%0.2f", min_dlui),
+                              sprintf("dLUI > %0.2f", min_dlui)))) %>%
+    mutate(sig_size=paste(size_effect, sig, sep=", ")) %>%
+    mutate(outlier=abs(stat) > max_dlui,
+           stat_adj=ifelse(outlier, sign(stat)*max_dlui, stat))
+  
+  pmain <- df %>% 
+    ggplot(aes(x=stat_adj, y=-log10(pval))) +
+    rasterize(geom_point(aes(color=sig_size, shape=outlier, size=sig_size)), dpi=300) +
+    geom_vline(xintercept=min_dlui*c(-1,1), 
+               linetype='dashed', size=0.5, color="darkgrey") +
+    scale_color_manual(values=c("grey", "#958DBE", "darkgrey", 
+                                "#3F6CA5", "darkgrey", "#C63732")) +
+    scale_x_continuous(breaks=scales::pretty_breaks(6), 
+                       limits=max_dlui*c(-1,1)) +
+    scale_shape_manual(values=c("FALSE"=16, "TRUE"=17)) +
+    scale_size_manual(values=c(0.3, 0.3, 0.3, 1.2, 0.3, 1.2)) +
+    labs(x="dLUI", 
+         y="-log10(p-value)", color="Significance\n (BH Adjusted)") +
+    theme(legend.title.align=0.5) + 
+    guides(shape=FALSE) +
+    theme_cowplot()
+  
+  if (!legend) {
+    pmain <- pmain + guides(color=FALSE, size=FALSE)
+  }
+  
+  xdens <- axis_canvas(pmain, axis='x') + 
+    geom_density(data=df, aes(x=stat, fill=sig), alpha=0.7, size=0.2) +
+    scale_fill_manual(values=c("black", "#958DBE"))
+  
+  insert_xaxis_grob(pmain, xdens, grid::unit(0.2, 'null'), position='top') %>% 
+    ggdraw()
+}
+
+suiVolcanoPlot <- function (df, max_q=0.05, min_dsui=0.1, max_dsui=0.5, legend=TRUE) {
+  df %<>% 
+    mutate(sig=ifelse(qval < max_q, sprintf("q < %0.2f", max_q), "NS")) %>%
+    mutate(size_effect=ifelse(abs(stat) > min_dsui, 
+                              sprintf("dSUI > %0.2f", min_dsui), 
+                              sprintf("dSUI < %0.2f", min_dsui))) %>%
+    mutate(sig_size=paste(size_effect, sig, sep=", ")) %>%
+    mutate(outlier=abs(stat) > max_dsui,
+           stat_adj=ifelse(outlier, sign(stat)*max_dsui, stat))
+  
+  pmain <- df %>% 
+    ggplot(aes(x=stat_adj, y=-log10(pval))) +
+    rasterize(geom_point(aes(color=sig_size, shape=outlier), size=0.7), dpi=300) +
+    geom_vline(xintercept=min_dsui*c(-1,1), 
+               linetype='dashed', size=0.5, color="darkgrey") +
+    scale_color_manual(values=c("grey", "#663333", "darkgrey", "red")) +
+    scale_shape_manual(values=c("FALSE"=16, "TRUE"=17)) +
+    scale_x_continuous(breaks=scales::pretty_breaks(6), 
+                       limits=max_dsui*c(-1,1)) +
+    labs(x="dSUI", 
+         y="-log10(p-value)", color="Significance\n (BH Adjusted)") +
+    guides(shape=FALSE) +
+    theme(legend.title.align=0.5) + 
+    theme_cowplot()
+  
+  if (!legend) {
+    pmain <- pmain + guides(color=FALSE)
+  }
+  
+  xdens <- axis_canvas(pmain, axis='x') + 
+    geom_density(data=df, aes(x=stat, fill=sig), alpha=0.7, size=0.2) +
+    scale_fill_manual(values=c("black", "red"))
+  
+  insert_xaxis_grob(pmain, xdens, grid::unit(0.15, 'null'), position='top') %>% 
+    ggdraw()
+}
+
+wdVolcanoPlot <- function (df, max_q=0.05, min_wd=0.1, max_wd=0.5, legend=TRUE) {
+  df %<>% 
+    mutate(sig=ifelse(qval < max_q, sprintf("q < %0.2f", max_q), "NS")) %>%
+    mutate(size_effect=ifelse(stat > min_wd, 
+                              sprintf("WD > %0.2f", min_wd), 
+                              sprintf("WD < %0.2f", min_wd))) %>%
+    mutate(sig_size=paste(size_effect, sig, sep=", ")) %>%
+    mutate(outlier=stat > max_wd,
+           stat_adj=ifelse(outlier, max_wd, stat))
+  
+  pmain <- df %>% 
+    ggplot(aes(x=stat_adj, y=-log10(pval))) +
+    rasterize(geom_point(aes(color=sig_size), size=0.7), dpi=300) +
+    geom_vline(xintercept=min_wd, linetype='dashed', size=0.5, color="darkgrey") +
+    scale_color_manual(values=c("grey", "#663333", "darkgrey", "red")) +
+    scale_shape_manual(values=c("FALSE"=16, "TRUE"=17)) +
+    scale_x_continuous(breaks=scales::pretty_breaks(6), 
+                       limits=c(0,max_wd)) +
+    labs(x="Total Isoform Change", 
+         y="-log10(p-value)", color="Significance\n (BH Adjusted)") +
+    guides(shape=FALSE) +
+    theme(legend.title.align=0.5) + 
+    theme_cowplot()
+  
+  if (!legend) {
+    pmain <- pmain + guides(color=FALSE)
+  }
+  
+  xdens <- axis_canvas(pmain, axis='x') + 
+    geom_density(data=df, aes(x=stat, fill=sig), alpha=0.7, size=0.2) +
+    scale_fill_manual(values=c("black", "red"))
+  
+  insert_xaxis_grob(pmain, xdens, grid::unit(0.15, 'null'), position='top') %>% 
+    ggdraw()
+}
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+df_test_lui <- read_tsv("data/dtu/20220616-451lu-utrome-twosample-lui.min50.boot10k.tsv.gz")
+df_test_t <- read_tsv("data/dge/20220616-451lu-utrome-t-tests.tsv.gz")
+```
+
+# Analysis
+
+## LUI Test: 451Lu iBRAF Resistant vs Parental
+### Significant Genes
+```{r sig_lui}
+df_test_lui %>%
+  filter(qval < 0.05, abs(stat) >= 0.15) %>%
+  mutate(direction=ifelse(stat > 0, "lengthening", "shortening")) %>%
+  dplyr::count(direction) %>%
+  knitr::kable()
+```
+
+### Significant Genes, By Effect
+```{r sig_lui_effect}
+df_test_lui %>%
+  mutate(sig=qval < 0.05,
+         abs_dlui=ifelse(abs(stat) < 0.15, "< 0.15", ">=0.15")) %$%
+  table(sig, abs_dlui)
+```
+
+### Volcano Plot
+```{r plot_volcano_lui, fig.width=7, fig.height=5}
+luiVolcanoPlot(df_test_lui, max_q=0.05, min_dlui=0.15)
+```
+
+```{r plot_volcano_lui_save, fig.width=5, fig.height=5}
+luiVolcanoPlot(df_test_lui, max_q=0.05, min_dlui=0.15, legend=FALSE)
+ggsave("output/figure5/utrome/fig5d-451lu-lui-volcano.pdf", width=5, height=5, dpi=300)
+```
+
+## Compare DGE
+```{r sig_dge}
+df_test_t %>%
+  filter(qval < 0.05, abs(log2FC) >= log2(2)) %>%
+  mutate(direction=ifelse(log2FC > 0, "up", "down")) %>%
+  dplyr::count(direction) %>%
+  knitr::kable()
+```
+
+```{r compare_dge}
+df_sig_lui <- df_test_lui %>%
+  mutate(sig_lui=qval < 0.05 & abs(stat) >= 0.15) %>%
+  select(gene, sig_lui)
+
+df_sig_t <- df_test_t %>%
+  mutate(sig_gene=qval < 0.05 & abs(log2FC) >= log2(2)) %>%
+  dplyr::rename(gene=gene_id) %>%
+  select(gene, sig_gene)
+
+df_sig_multi <- df_sig_lui %>%
+  left_join(df_sig_t, by="gene")
+
+df_sig_multi %>%
+  dplyr::count(sig_gene, sig_lui) %>%
+  knitr::kable()
+```
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash conda_env, comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

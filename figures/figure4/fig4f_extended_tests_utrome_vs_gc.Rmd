@@ -1,0 +1,320 @@
+---
+title: "Expanded Cell Types - UTRome Tests - GENCODE vs UTRome"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+This compares the overlap of significant genes detected by differential isoform 
+usage testing starting from GENCODE versus UTRome annotation counts.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(writexl)
+library(cowplot)
+```
+
+## Parameters
+```{r set_params}
+MAX_QVAL=0.05
+MIN_DWUI=0.10
+
+TEST_UTROME="data/dtu/20230523-diff-pairwise-wui-tests.min50.boot10k.tsv.gz"
+TEST_GENCODE="data/dtu/20230523-diff-pairwise-wui-tests-gc.min50.boot10k.tsv.gz"
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+df_utrome <- read_tsv(TEST_UTROME) %>% dplyr::rename(gene_id=gene)
+df_gencode <- read_tsv(TEST_GENCODE) %>% dplyr::rename(gene_id=gene)
+```
+
+## Preprocessing
+```{r prepare_data}
+df_sig_utrome <- df_utrome %>%
+  mutate(sig_utrome=qval < MAX_QVAL & abs(stat) >= MIN_DWUI) %>%
+  select(gene_id, start, end, sig_utrome)
+
+df_sig_gencode <- df_gencode %>%
+  mutate(sig_gencode=qval < MAX_QVAL & abs(stat) >= MIN_DWUI) %>%
+  select(gene_id, start, end, sig_gencode)
+
+df_sig_all <- full_join(df_sig_utrome, df_sig_gencode, by=c("gene_id", "start", "end")) %>%
+  replace_na(list(sig_utrome=FALSE, sig_gencode=FALSE)) %>%
+  mutate(sig=ifelse(sig_utrome & sig_gencode, "Both", 
+                    ifelse(sig_utrome, "UTRome", 
+                           ifelse(sig_gencode, "GENCODE", "NS"))),
+         sig=factor(sig, levels=c("NS", "UTRome", "Both", "GENCODE")),
+         test_label=str_c(end, " vs ", start))
+```
+
+### Summary Table
+```{r tbl_summary}
+df_summary_utrome <- df_utrome %>% 
+  group_by(start, end) %>% 
+  summarise(n_tests=dplyr::n(), 
+            n_sig=sum(abs(stat) >= MIN_DWUI & qval < MAX_QVAL), 
+            frac_sig=n_sig/n_tests,
+            .groups='drop') 
+
+df_summary_gencode <- df_gencode %>% 
+  group_by(start, end) %>% 
+  summarise(n_tests=dplyr::n(), 
+            n_sig=sum(abs(stat) >= MIN_DWUI & qval < MAX_QVAL), 
+            frac_sig=n_sig/n_tests,
+            .groups='drop')
+
+df_summary <- full_join(df_summary_utrome, df_summary_gencode,
+                        by=c("start", "end"), suffix=c("_UTRome", "_GENCODE"))
+```
+
+```{r export_summary}
+write_xlsx(df_summary, "tables/som-utrome-vs-gencode-wui-tests.dwui10.fdr5.xlsx")
+```
+
+# Summary Plots
+```{r fig.width=3, fig.height=3}
+df_summary %>%
+  ggplot(aes(x=frac_sig_GENCODE, y=frac_sig_UTRome)) +
+  geom_point(size=1) +
+  geom_abline(slope=1, linewidth=0.1, linetype='dashed', color='orchid') +
+  coord_equal(xlim=c(0,0.35), ylim=c(0,0.35)) +
+  labs(x="Fraction Significant [GENCODE]",
+       y="Fraction Significant [UTRome]") +
+  theme_bw()
+
+df_summary %>%
+  ggplot(aes(x=n_tests_GENCODE, y=n_tests_UTRome)) +
+  geom_point(size=1) +
+  geom_abline(slope=1, linewidth=0.1, linetype='dashed', color='orchid') +
+  coord_equal(xlim=c(0,5e3), ylim=c(0,5e3)) +
+  labs(x="Testable Genes [GENCODE]",
+       y="Testable Genes [UTRome]") +
+  theme_bw()
+
+df_summary %>%
+  ggplot(aes(x=n_sig_GENCODE, y=n_sig_UTRome)) +
+  geom_point(size=1) +
+  geom_abline(slope=1, linewidth=0.1, linetype='dashed', color='orchid') +
+  coord_equal(xlim=c(0,1100), ylim=c(0,1100)) +
+  labs(x="Significant Genes [GENCODE]",
+       y="Significant Genes [UTRome]") +
+  theme_bw()
+```
+
+```{r plot_fraction, fig.width=6, fig.height=4}
+test_lbl_lvls <- c("MEF vs mESC",
+                   "ODC vs mNeur",
+                   "MG vs mNeur",
+                   "Ery vs HSC",
+                   "endo vs mNeur",
+                   "Astro vs mNeur",
+                   "ODC vs OPC",
+                   "Mono vs HSC",
+                   "Neutro vs HSC",
+                   "TraEpi vs TraMes",
+                   "TSpleen vs Timm",
+                   "basMamm vs lumMamm",
+                   "TMamm vs TSpleen", 
+                   "mNeur vs imNeur",
+                   "Baso vs HSC",
+                   "BSpleen vs TSpleen",
+                   "NeurEC vs mNeur")
+
+df_summary_long_frac <- df_summary %>%
+  mutate(test_label=fct(str_c(end, " vs ", start), test_lbl_lvls)) %>%
+  dplyr::select(test_label, frac_sig_GENCODE, frac_sig_UTRome) %>%
+  pivot_longer(cols=starts_with("frac_sig"), 
+               names_to="target", values_to="frac_sig",
+               names_prefix="frac_sig_") %>%
+  mutate(target=fct(target, c("GENCODE", "UTRome")))
+
+df_summary_long_frac %>%
+  arrange(desc(target)) %>%
+  ggplot(aes(x=test_label, y=frac_sig, fill=target)) +
+  geom_bar(stat='identity', position=position_identity(), 
+           color='black', linewidth=0.1) +
+  scale_fill_manual(values=c("UTRome"='steelblue', "GENCODE"='grey80')) +
+  scale_x_discrete(guide=guide_axis(angle=45)) +
+  scale_y_continuous(expand=c(0,0,0.05,0)) +
+  labs(x=NULL, y="Fraction of Significant DTU Tests",
+       fill="scUTRquant\nTarget") +
+  theme_bw()
+
+df_summary_long_frac %>%
+  ggplot(aes(x=test_label, y=frac_sig, fill=target)) +
+  geom_bar(stat='identity', position='dodge',
+           color='black', linewidth=0.1, width=0.8) +
+  scale_fill_manual(values=c("GENCODE"='grey80', "UTRome"='steelblue')) +
+  scale_x_discrete(guide=guide_axis(angle=45)) +
+  scale_y_continuous(expand=c(0,0,0.05,0)) +
+  labs(x=NULL, y="Fraction of Significant DTU Tests",
+       fill="scUTRquant\nTarget") +
+  theme_bw()
+
+ggsave("output/figure4/fig4f-celltypes-utrome-gc-fraction-dodged.pdf", width=6, height=4, dpi=300)
+```
+
+
+### Absolute Numbers
+```{r abs_dodged, width=6, height=4}
+df_summary_long_n <- df_summary %>%
+  mutate(test_label=fct(str_c(end, " vs ", start), test_lbl_lvls)) %>%
+  dplyr::select(test_label, n_sig_GENCODE, n_sig_UTRome) %>%
+  pivot_longer(cols=starts_with("n_sig"), 
+               names_to="target", values_to="n_sig",
+               names_prefix="n_sig_") %>%
+  mutate(target=fct(target, c("GENCODE", "UTRome")))
+
+df_summary_long_n %>%
+  arrange(desc(target)) %>%
+  ggplot(aes(x=test_label, y=n_sig, fill=target)) +
+  geom_bar(stat='identity', position=position_identity(), 
+           color='black', linewidth=0.1) +
+  scale_fill_manual(values=c("UTRome"='steelblue', "GENCODE"='grey80')) +
+  scale_x_discrete(guide=guide_axis(angle=45)) +
+  scale_y_continuous(expand=c(0,0,0.05,0)) +
+  labs(x=NULL, y="Significant DTU Tests",
+       fill="scUTRquant\nTarget") +
+  theme_bw()
+
+df_summary_long_n %>%
+  ggplot(aes(x=test_label, y=n_sig, fill=target)) +
+  geom_bar(stat='identity', position='dodge',
+           color='black', linewidth=0.1, width=0.8) +
+  scale_fill_manual(values=c("GENCODE"='grey80', "UTRome"='steelblue')) +
+  scale_x_discrete(guide=guide_axis(angle=45)) +
+  scale_y_continuous(expand=c(0,0,0.05,0)) +
+  labs(x=NULL, y="Significant DTU Tests",
+       fill="scUTRquant\nTarget") +
+  theme_bw()
+
+ggsave("output/figure4/fig4f-celltypes-utrome-gc-nsig-dodged.pdf", width=6, height=4, dpi=300)
+```
+
+
+# All Genes
+## Everything
+```{r plot_all_ns, fig.width=6, fig.height=5}
+colvals_ns <- c(NS="#CCCCCC", UTRome="#EEE643", Both="#2E9F72", GENCODE="#2170B1") %>% {
+  setNames(colorspace::desaturate(., 0.2), names(.))
+}
+
+df_sig_all %>%
+  mutate(test_label=fct_reorder(test_label, sig, . %>% { sum(. != "NS") }, .desc=TRUE)) %>%
+  ggplot(aes(x=test_label, fill=sig)) +
+  geom_bar(position='stack', color='black', linewidth=0.1) +
+  scale_fill_manual(breaks=names(colvals_ns), values=colvals_ns) +
+  scale_x_discrete(guide=guide_axis(angle=45)) +
+  scale_y_continuous(expand=c(0,0,0.05,0)) +
+  labs(x="Compared Cell Types", y="All Tested Genes", fill="Difference") +
+  theme_bw()
+
+ggsave("output/figure4/fig4f-celltypes-utrome-gc-compared-all-ns.pdf", width=6, height=5, dpi=300)
+```
+
+## Plot Positive
+```{r plot_all, fig.width=6, fig.height=5}
+colvals <- c(UTRome="#EEE643", Both="#2E9F72", GENCODE="#2170B1") %>% {
+  setNames(colorspace::desaturate(., 0.2), names(.))
+}
+
+df_sig_all %>%
+  filter(sig != "NS") %>%
+  ggplot(aes(x=fct_infreq(test_label), fill=sig)) +
+  geom_bar(position='stack', color='black', linewidth=0.1) +
+  scale_fill_manual(values=colvals) +
+  scale_x_discrete(guide=guide_axis(angle=45)) +
+  scale_y_continuous(expand=c(0,0,0.05,0)) +
+  labs(x="Compared Cell Types", y="Significant Genes", fill="Difference") +
+  theme_bw()
+
+ggsave("output/figure4/fig4f-celltypes-utrome-gc-compared-all.pdf", width=6, height=5, dpi=300)
+```
+
+```{r}
+df_ntests_compare <- full_join(df_summary_gencode, df_summary_utrome, by=c("start", "end"), 
+          suffix=c("_gencode", "_utrome")) %>%
+  mutate(ratio_tests=n_tests_utrome/n_tests_gencode,
+         ratio_frac=frac_sig_utrome/frac_sig_gencode)
+
+df_ntests_compare
+
+summary(df_ntests_compare$ratio_tests - 1)
+summary(df_ntests_compare$frac_sig_utrome/df_ntests_compare$frac_sig_gencode - 1)
+```
+
+
+```{r tbl_wide}
+df_chisq <- df_sig_all %>%
+  group_by(start, end) %>%
+  nest() %>%
+  transmute(start, end, res=map(data, ~ broom::tidy(chisq.test(.x$sig_utrome, .x$sig_gencode, simulate.p.value=TRUE, B=10000)))) %>%
+  unnest(res) %>%
+  select(start, end, statistic, p.value)
+
+map_sig <- c("FALSE_FALSE"="NS",
+             "FALSE_TRUE"="UTRome",
+             "TRUE_FALSE"="GENCODE",
+             "TRUE_TRUE"="Both")
+
+df_wide <- df_sig_all %>%
+  group_by(start, end) %>%
+  dplyr::count(sig_gencode, sig_utrome) %>%
+  mutate(result=map_sig[str_c(sig_gencode,sig_utrome, sep="_")]) %>%
+  ungroup() %>%
+  pivot_wider(id_cols=c("start", "end"), names_from="result", values_from="n", values_fill=0L) %>%
+  mutate("Coexpressed multi-UTR genes"=NS+UTRome+GENCODE+Both,
+         "Fraction more significant"=(UTRome+Both)/(GENCODE+Both)) %>%
+  left_join(df_chisq, by=c("start", "end")) %>%
+  dplyr::rename("Cell Type 1"=start,
+                "Cell Type 2"=end,
+                "Chi-squared"=statistic,
+                "p-value"=p.value) %>%
+  select(`Cell Type 1`, `Cell Type 2`, `Coexpressed multi-UTR genes`,
+         NS:Both, `Fraction more significant`, `Chi-squared`, `p-value`)
+
+knitr::kable(df_wide)
+
+summary(df_wide$`Fraction more significant` - 1)
+```
+
+## Export Table
+```{r export_tbl}
+write_xlsx(df_wide, "output/tables/tbl3-extended-celltypes-chisq-results-utrome-gc.xlsx")
+```
+
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

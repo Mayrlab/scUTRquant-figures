@@ -1,0 +1,4 @@
+sample_id,tissue,version,file_scutrquant,file_cellranger
+pbmc_1k_v2_fastq,pbmc,v2,data/sce/utrome_hg38_v1/pbmc_1k_v2_fastq.genes.Rds,data/counts/pbmc_1k_v2_filtered_feature_bc_matrix.h5
+pbmc_1k_v3_fastq,pbmc,v3,data/sce/utrome_hg38_v1/pbmc_1k_v3_fastq.genes.Rds,data/counts/pbmc_1k_v3_filtered_feature_bc_matrix.h5
+pbmc_10k_v3_fastq,pbmc,v3,data/sce/utrome_hg38_v1/pbmc_10k_v3_fastq.genes.Rds,data/counts/pbmc_10k_v3_filtered_feature_bc_matrix.h5
