@@ -1,0 +1,302 @@
+---
+title: "Expanded Cell Types - Isoform Changes"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+Here we examine which isoform changes the most when DTU changes are detected.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(writexl)
+library(SingleCellExperiment)
+library(Matrix)
+library(ggbeeswarm)
+```
+
+## Parameters
+```{r set_params}
+MAX_QVAL=0.05
+MIN_L2FC=log2(1.5)
+MIN_DWUI=0.10
+
+FILE_SCE="data/sce/merged.txs.full_annot.Rds"
+TEST_DTU="data/dtu/20230523-diff-pairwise-wui-tests.min50.boot10k.tsv.gz"
+TEST_DGE="data/dge/20230530-diff-pairwise-t-tests.tsv.gz"
+
+celltype_map <- c(
+  "Bone Marrow (LSK,LK) - 14/Stem"="HSC",
+  "Bone Marrow (LSK,LK) - 12/Ery"="Ery",
+  "Bone Marrow (LSK,LK) - 7/Neu"="Neutro",
+  "Bone Marrow (LSK,LK) - 6/Baso"="Baso",
+  "Bone Marrow (LSK,LK) - 5/Mo"="Mono",
+  "Brain - OLG"="ODC",
+  "Brain - OPC"="OPC",
+  "Brain - ImmN"="imNeur",
+  "Brain - mNEUR"="mNeur",
+  "Trachea - epithelial cell"="TraEpi",
+  "Trachea - mesenchymal cell"="TraMes",
+  "Mammary_Gland - luminal epithelial cell of mammary gland"="lumMamm",
+  "Mammary_Gland - basal cell"="basMamm",
+  "Thymus - immature T cell"="Timm",
+  "Spleen - T cell"="TSpleen",
+  "Spleen - B cell"="BSpleen",
+  "Mammary_Gland - T cell"="TMamm",
+  "Mammary_Gland - B cell"="BMamm",
+  "Brain - ASC"="Astro",
+  "Brain - MG"="MG",
+  "Brain - NendC"="NeurEC",
+  "Brain - EC"="endo",
+  "Embryo - mESC"="mESC",
+  "Embryo - MEF"="MEF"
+)
+
+test_pairs <- list(
+  c("mESC", "MEF"),
+  c("HSC", "Ery"),
+  c("HSC", "Neutro"),
+  c("HSC", "Baso"),
+  c("HSC", "Mono"),
+  c("Timm", "TSpleen"),
+  c("OPC", "ODC"),
+  c("imNeur", "mNeur"),
+  c("TraMes", "TraEpi"),
+  c("lumMamm", "basMamm"),
+  c("TSpleen", "TMamm"),
+  c("TSpleen", "BSpleen"),
+  c("mNeur", "NeurEC"),
+  c("mNeur", "Astro"),
+  c("mNeur", "ODC"),
+  c("mNeur", "MG"),
+  c("mNeur", "endo")
+)
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+sce <- readRDS(FILE_SCE)
+df_dtu <- read_tsv(TEST_DTU) %>%
+  dplyr::rename(gene_id=gene)
+df_dge <- read_tsv(TEST_DGE)
+```
+
+## Preprocessing
+### Subset SCE
+```{r subset_sce}
+colData(sce)['tissue_celltype'] <- colData(sce) %>% 
+  { str_c(.$tissue, " - ", .$cell_type) }
+idx_cells <- colData(sce) %>% { (.$age != 'old') & (.$tissue_celltype %in% names(celltype_map)) }
+idx_txs <- rowData(sce) %>% { (!.$is_blacklisted) & (!.$is_ipa) & (.$atlas.utr_type == "multi") }
+
+sce %<>% `[`(, idx_cells)
+
+colData(sce)['celltype_label'] <- celltype_map[sce$tissue_celltype]
+
+M_cells_celltype <- sce$celltype_label %>% 
+  `names<-`(NULL) %>% fac2sparse %>% t
+
+cts_tx_celltype <- counts(sce) %*% M_cells_celltype
+df_coldata <- tibble(celltype_label=colnames(M_cells_celltype),
+                     n_cells=colSums(M_cells_celltype))
+
+tpm_tx_celltype <- cts_tx_celltype %>%
+  { . %*% Diagonal(ncol(.), 1e6/colSums(.)) } %>%
+  `colnames<-`(colnames(cts_tx_celltype)) %>%
+  as.matrix()
+
+
+se <- SummarizedExperiment(assays=list(counts=cts_tx_celltype,
+                                       tpm=tpm_tx_celltype),
+                           colData=df_coldata,
+                           rowData=rowData(sce))
+
+se %<>% `[`(idx_txs,)
+
+gene_id2sym <- rowData(se) %>% as_tibble %$% setNames(gene_name, gene_id)
+```
+
+```{r compute_sig_tbls}
+df_sig_dtu <- df_dtu %>%
+  mutate(sig_isoform=qval < MAX_QVAL & abs(stat) >= MIN_DWUI) %>%
+  select(gene_id, start, end, sig_isoform)
+
+df_sig_dge <- df_dge %>%
+    mutate(sig_gene=qval < MAX_QVAL & abs(log2FC) >= MIN_L2FC) %>%
+  select(gene_id, start, end, sig_gene)
+
+df_sig_all <- full_join(df_sig_dtu, df_sig_dge, by=c("gene_id", "start", "end")) %>%
+  replace_na(list(sig_isoform=FALSE, sig_gene=FALSE)) %>%
+  mutate(sig=ifelse(sig_isoform & sig_gene, "Both", 
+                    ifelse(sig_isoform, "DTU", 
+                           ifelse(sig_gene, "DGE", "NS"))),
+         sig=factor(sig, levels=c("NS", "DTU", "Both", "DGE")),
+         test_label=str_c(end, " vs ", start))
+
+df_sig_multi <- left_join(df_sig_dtu, df_sig_dge, by=c("gene_id", "start", "end")) %>%
+  replace_na(list(sig_isoform=FALSE, sig_gene=FALSE)) %>%
+  mutate(sig=ifelse(sig_isoform & sig_gene, "Both", 
+                    ifelse(sig_isoform, "DTU",
+                           ifelse(sig_gene, "DGE", "NS"))),
+         sig=factor(sig, levels=c("NS", "DTU", "Both", "DGE")),
+         test_label=str_c(end, " vs ", start))
+```
+
+
+# Analysis
+## Compute TPMs, FCs, and determine site of most change
+```{r}
+sig_genes <- df_sig_multi %>%
+  filter(sig_isoform) %>%
+  distinct(gene_id) %$%
+  gene_id
+
+sig_gene_test <- df_sig_multi %>%
+  filter(sig_isoform) %>%
+  distinct(gene_id, start, end)
+
+df_isoforms <- rowData(se) %>% as_tibble %>%
+  filter(gene_id %in% sig_genes) %>%
+  filter(atlas.pct_utr_no_ipa > 0.1) %>%
+  add_count(gene_id, name="n_utrs") %>%
+  filter(n_utrs == 2) %>%
+  group_by(gene_id) %>%
+  mutate(utr_rank=rank(atlas.pct_utr_no_ipa)) %>%
+  summarize(tx_weak=transcript_id[utr_rank == 2],
+            tx_strong=transcript_id[utr_rank == 1])
+
+df_fcs <- df_sig_multi %>%
+  filter(sig_isoform) %>%
+  left_join(df_isoforms, by="gene_id") %>%
+  filter(!is.na(tx_weak)) %>%
+  mutate(tpm_weak_start=map2_dbl(.$tx_weak, .$start, ~ tpm_tx_celltype[.x, .y]),
+         tpm_weak_end=map2_dbl(.$tx_weak, .$end, ~ tpm_tx_celltype[.x, .y]),
+         tpm_strong_start=map2_dbl(.$tx_strong, .$start, ~ tpm_tx_celltype[.x, .y]),
+         tpm_strong_end=map2_dbl(.$tx_strong, .$end, ~ tpm_tx_celltype[.x, .y])) %>%
+  mutate(fc_weak=tpm_weak_end/tpm_weak_start,
+         fc_strong=tpm_strong_end/tpm_strong_start,
+         l2fc_weak=log2(fc_weak),
+         l2fc_strong=log2(fc_strong)) %>%
+  mutate(site_larger_fc=ifelse(abs(l2fc_strong) >= abs(l2fc_weak), "strong", "weak"),
+         celltype_lower_tpm=ifelse(site_larger_fc == "strong",
+                                   ifelse(l2fc_strong > 0, "start", "end"),
+                                   ifelse(l2fc_weak > 0, "start", "end"))) %>%
+  mutate(does_weaker_change_more=case_when(
+    celltype_lower_tpm == "start" & site_larger_fc == "strong" ~ tpm_strong_start < tpm_weak_start,
+    celltype_lower_tpm == "start" & site_larger_fc == "weak"   ~ tpm_strong_start > tpm_weak_start,
+    celltype_lower_tpm == "end" & site_larger_fc == "strong"   ~ tpm_strong_end < tpm_weak_end,
+    celltype_lower_tpm == "end" & site_larger_fc == "weak"     ~ tpm_strong_end > tpm_weak_end))
+```
+
+
+## Compare Global "Weak" and "Strong" Sites
+The following define weak and strong sites from the atlas, rather than based on the cell type usage.
+
+```{r plots_fc, fig.width=12, fig.height=12}
+df_fcs %>%
+  ggplot(aes(x=l2fc_strong, y=l2fc_weak)) +
+  geom_point() +
+  geom_abline(linetype='dashed', color='orchid') +
+  facet_wrap(vars(test_label)) +
+  theme_bw()
+
+df_fcs %>%
+  ggplot(aes(x=abs(l2fc_strong), y=abs(l2fc_weak))) +
+  geom_point() +
+  geom_abline(linetype='dashed', color='orchid') +
+  facet_wrap(vars(test_label)) +
+  theme_bw()
+```
+
+```{r}
+df_fcs %>%
+  filter(!is.na(fc_weak), !is.na(fc_strong)) %>%
+  group_by(test_label) %>%
+  summarize(n_greater=sum(abs(log2(fc_weak)) > abs(log2(fc_strong))), n_total=n(),
+            frac_greater=n_greater/n_total)
+```
+
+```{r}
+df_fcs %>%
+  filter(!is.na(fc_weak), !is.na(fc_strong)) %>%
+  group_by(test_label, sig) %>%
+  summarize(n_greater=sum(fc_weak > fc_strong), n_total=n(),
+            frac_greater=n_greater/n_total)
+```
+
+## Compare Cell-Type-Specific "Weak" and "Strong" Sites
+Here we use the following definition of weak and strong:
+
+For each significant gene-test pair, we determine which site had the most fold-change.
+For this site, we determine which cell type it had lower expression. Then we check
+whether this site had lower or higher expression than the other site.
+
+```{r}
+df_fcs %>%
+  group_by(test_label) %>%
+  summarize(fraction_weaker_changed_more=mean(does_weaker_change_more))
+```
+
+
+```{r}
+df_fcs %>%
+  filter(!is.na(does_weaker_change_more)) %>%
+  group_by(test_label) %>%
+  summarize(fraction_weaker_changed_more=mean(does_weaker_change_more)) %>%
+  ggplot(aes(y=test_label, x=fraction_weaker_changed_more)) +
+  geom_bar(stat='identity') +
+  scale_x_continuous(expand=c(0,0,0,0), limits=c(0,1)) +
+  labs(x="Fraction of Weaker Sites with Larger Fold-Change",
+       y=NULL) +
+  theme_bw()
+```
+
+```{r fig.width=2, fig.height=4}
+df_fcs %>%
+  filter(!is.na(does_weaker_change_more)) %>%
+  group_by(test_label) %>%
+  summarize(fraction_weaker_changed_more=mean(does_weaker_change_more)) %>%
+  ggplot(aes(x="n = 17", y=fraction_weaker_changed_more)) +
+  stat_summary(fun='mean', geom='bar', width=0.4, fill='lightgrey', color='black') +
+  stat_summary(fun.data=mean_se, geom='errorbar', width=0.3) +
+  geom_quasirandom(width=0.1, size=1) +
+  scale_y_continuous(limits=c(0,1), expand=expansion(add=c(0,0))) +
+  labs(x=NULL, y="Fraction of Weaker Sites with Larger Fold-Change") +
+  theme_bw()
+
+ggsave("output/figure4/sup-weaker-isoform-foldchange.pdf", width=2, height=4, dpi=300)
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

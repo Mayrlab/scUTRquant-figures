@@ -1,0 +1,315 @@
+---
+title: "Expanded Cell Types - DGE vs DTU Tests"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+    df_print: paged
+---
+
+# Purpose
+
+This compares the overlap of significant genes detected by differential gene 
+expression testing versus differential isoform usage testing.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(writexl)
+library(cowplot)
+```
+
+## Parameters
+```{r set_params}
+MAX_QVAL=0.05
+MIN_L2FC=log2(1.5)
+MIN_DWUI=0.10
+
+TEST_DTU="data/dtu/20230523-diff-pairwise-wui-tests.min50.boot10k.tsv.gz"
+TEST_DGE="data/dge/20230530-diff-pairwise-t-tests.tsv.gz"
+MERGE_TSV="data/gtf/mca/utrome.e30.t5.gc25.pas3.f0.9999.w500.m200.tsv"
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+df_merge <- read_tsv(MERGE_TSV) %>%
+  mutate(is_merge=tx_in != tx_out) %>%
+  group_by(gene_out) %>%
+  summarize(has_merge=any(is_merge))
+
+df_dtu <- read_tsv(TEST_DTU) %>%
+  dplyr::rename(gene_id=gene)
+df_dge <- read_tsv(TEST_DGE)
+```
+
+## Preprocessing
+```{r prepare_data}
+df_sig_dtu <- df_dtu %>%
+  mutate(sig_isoform=qval < MAX_QVAL & abs(stat) >= MIN_DWUI) %>%
+  select(gene_id, start, end, sig_isoform)
+
+df_sig_dge <- df_dge %>%
+    mutate(sig_gene=qval < MAX_QVAL & abs(log2FC) >= MIN_L2FC) %>%
+  select(gene_id, start, end, sig_gene)
+
+df_sig_all <- full_join(df_sig_dtu, df_sig_dge, by=c("gene_id", "start", "end")) %>%
+  replace_na(list(sig_isoform=FALSE, sig_gene=FALSE)) %>%
+  mutate(sig=ifelse(sig_isoform & sig_gene, "Both", 
+                    ifelse(sig_isoform, "DTU", 
+                           ifelse(sig_gene, "DGE", "NS"))),
+         sig=factor(sig, levels=c("NS", "DTU", "Both", "DGE")),
+         test_label=str_c(end, " vs ", start)) %>%
+  left_join(df_merge, by=c("gene_id"="gene_out"))
+
+df_sig_multi <- left_join(df_sig_dtu, df_sig_dge, by=c("gene_id", "start", "end")) %>%
+  replace_na(list(sig_isoform=FALSE, sig_gene=FALSE)) %>%
+  mutate(sig=ifelse(sig_isoform & sig_gene, "Both", 
+                    ifelse(sig_isoform, "DTU",
+                           ifelse(sig_gene, "DGE", "NS"))),
+         sig=factor(sig, levels=c("NS", "DTU", "Both", "DGE")),
+         test_label=str_c(end, " vs ", start)) %>%
+  left_join(df_merge, by=c("gene_id"="gene_out"))
+```
+
+# All Genes
+## Everything
+```{r plot_all_ns, fig.width=6, fig.height=5}
+colvals_ns <- c(NS="#CCCCCC", DTU="#EEE643", Both="#2E9F72", DGE="#2170B1") %>% {
+  setNames(colorspace::desaturate(., 0.2), names(.))
+}
+
+df_sig_all %>%
+  mutate(test_label=fct_reorder(test_label, sig, . %>% { sum(. != "NS") }, .desc=TRUE)) %>%
+  ggplot(aes(x=test_label, fill=sig)) +
+  geom_bar(position='stack', color='black', size=0.1) +
+  facet_wrap(vars(has_merge), ncol=1) +
+  scale_fill_manual(breaks=names(colvals_ns), values=colvals_ns) +
+  scale_x_discrete(guide=guide_axis(angle=45)) +
+  scale_y_continuous(expand=c(0,0,0.05,0)) +
+  labs(x="Compared Cell Types", y="All Tested Genes", fill="Difference") +
+  theme_bw()
+
+#ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-all-ns.pdf", width=6, height=5, dpi=300)
+```
+
+## Plot Positive
+```{r plot_all, fig.width=6, fig.height=5}
+colvals <- c(DTU="#EEE643", Both="#2E9F72", DGE="#2170B1") %>% {
+  setNames(colorspace::desaturate(., 0.2), names(.))
+}
+
+df_sig_all %>%
+  filter(sig != "NS") %>%
+  ggplot(aes(x=fct_infreq(test_label), fill=sig)) +
+  geom_bar(position='stack', color='black', size=0.1) +
+  facet_wrap(vars(has_merge), ncol=1) +
+  scale_fill_manual(values=colvals) +
+  scale_x_discrete(guide=guide_axis(angle=45)) +
+  scale_y_continuous(expand=c(0,0,0.05,0)) +
+  labs(x="Compared Cell Types", y="Significant Genes", fill="Difference") +
+  theme_bw()
+
+#ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-all.pdf", width=6, height=5, dpi=300)
+```
+
+## Table 
+```{r tbl_all_genes}
+map_sig <- c("FALSE_FALSE_FALSE"="NS (no merges)",
+             "FALSE_FALSE_TRUE"="NS (merges)",
+             "FALSE_TRUE_FALSE"="DTU (no merges)",
+             "FALSE_TRUE_TRUE"="DTU (merges)",
+             "TRUE_FALSE_FALSE"="DGE (no merges)",
+             "TRUE_FALSE_TRUE"="DGE (merges)",
+             "TRUE_TRUE_FALSE"="Both (no merges)",
+             "TRUE_TRUE_TRUE"="Both (merges)")
+
+df_wide_all <- df_sig_all %>%
+  group_by(start, end) %>%
+  dplyr::count(sig_gene, sig_isoform, has_merge) %>%
+  mutate(result=map_sig[str_c(sig_gene,sig_isoform, has_merge, sep="_")]) %>%
+  ungroup() %>%
+  mutate(result=factor(result, levels=setNames(map_sig, NULL))) %>%
+  pivot_wider(id_cols=c("start", "end"), names_from="result", values_from="n", values_fill=0L) %>%
+  mutate("All genes"=`NS (no merges)` + `NS (merges)` + 
+           `DTU (no merges)` + `DTU (merges)` + 
+           `DGE (no merges)` + `DGE (merges)` + 
+           `Both (no merges)` + `Both (merges)`) %>%
+  dplyr::rename("Cell Type 1"=start, "Cell Type 2"=end) %>%
+  select(`Cell Type 1`, `Cell Type 2`, all_of(setNames(map_sig, NULL)), "All genes")
+
+df_wide_all
+```
+
+## Export Table
+```{r export_tbl_all}
+#write_xlsx(df_wide_all, "output/tables/sup-tbl3-extended-celltypes-chisq-results-t-tests-all.xlsx")
+```
+
+# Multi-UTR Genes
+## Plot Positive-Only
+```{r plot_multi, fig.width=6, fig.height=5}
+df_sig_multi %>%
+  filter(sig != "NS") %>%
+  ggplot(aes(x=fct_infreq(test_label), fill=sig)) +
+  geom_bar(position='stack', color='black', size=0.1) +
+  facet_wrap(vars(has_merge), ncol=1) +
+  scale_fill_manual(breaks=names(colvals), values=colvals) +
+  scale_x_discrete(guide=guide_axis(angle=45)) +
+  scale_y_continuous(expand=c(0,0,0.05,0)) +
+  labs(x="Compared Cell Types", y="Significant Multi-UTR Genes", 
+       fill="Difference") +
+  theme_bw()
+
+#ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-multi.pdf", width=6, height=5, dpi=300)
+```
+
+## Plot All
+```{r plot_multi_ns, fig.width=6, fig.height=5}
+colvals_ns <- c(NS="#CCCCCC", DTU="#EEE643", Both="#2E9F72", DGE="#2170B1") %>% {
+  setNames(colorspace::desaturate(., 0.2), names(.))
+}
+
+df_sig_multi %>%
+  mutate(test_label=fct_reorder(test_label, sig, . %>% { sum(.=="DTU") }, .desc=TRUE)) %>%
+  ggplot(aes(x=test_label, fill=sig)) +
+  geom_bar(position='stack', color='black', size=0.1) +
+  facet_wrap(vars(has_merge), ncol=1) +
+  scale_fill_manual(breaks=names(colvals_ns), values=colvals_ns) +
+  scale_x_discrete(guide=guide_axis(angle=45)) +
+  scale_y_continuous(expand=c(0,0,0.05,0)) +
+  labs(x="Compared Cell Types", y="Coexpressed Multi-UTR Genes", 
+       fill="Difference") +
+  theme_bw()
+
+#ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-multi-ns.pdf", width=6, height=5, dpi=300)
+```
+
+## Table 
+```{r tbl_multi_genes}
+df_sig_multi %>%
+  group_by(start, end) %>%
+  dplyr::count(sig_gene, sig_isoform, has_merge)
+```
+
+## Chi-Square Tests
+### Combined
+```{r chisq_combined}
+df_test_combined <- df_sig_multi %>%
+  group_by(start, end) %>%
+  nest() %>%
+  transmute(start, end, res=map(data, ~ broom::tidy(chisq.test(.x$sig_gene, .x$sig_isoform, simulate.p.value=TRUE, B=10000)))) %>%
+  unnest(res) %>%
+  select(start, end, statistic, p.value)
+
+df_test_combined
+```
+
+### Unmerged Only
+```{r chisq_unmerged_only}
+df_test_unmerged <- df_sig_multi %>%
+  filter(!has_merge) %>%
+  group_by(start, end) %>%
+  nest() %>%
+  transmute(start, end, res=map(data, ~ broom::tidy(chisq.test(.x$sig_gene, .x$sig_isoform, simulate.p.value=TRUE, B=10000)))) %>%
+  unnest(res) %>%
+  select(start, end, statistic, p.value)
+
+df_test_unmerged
+```
+
+### Merged Only
+```{r chisq_merged_only}
+df_test_merged <- df_sig_multi %>%
+  filter(has_merge) %>%
+  group_by(start, end) %>%
+  nest() %>%
+  transmute(start, end, res=map(data, ~ broom::tidy(chisq.test(.x$sig_gene, .x$sig_isoform, simulate.p.value=TRUE, B=10000)))) %>%
+  unnest(res) %>%
+  select(start, end, statistic, p.value)
+
+df_test_merged
+```
+
+
+```{r tbl_wide}
+df_chisq <- df_sig_multi %>%
+  group_by(start, end) %>%
+  nest() %>%
+  transmute(start, end, 
+            res=map(data, 
+                    ~ broom::tidy(chisq.test(.x$sig_gene, .x$sig_isoform, .x$has_merge, 
+                                             simulate.p.value=TRUE, B=10000)))) %>%
+  unnest(res) %>%
+  select(start, end, statistic, p.value)
+
+map_sig <- c("FALSE_FALSE_FALSE"="NS (no merges)",
+             "FALSE_FALSE_TRUE"="NS (merges)",
+             "FALSE_TRUE_FALSE"="DTU (no merges)",
+             "FALSE_TRUE_TRUE"="DTU (merges)",
+             "TRUE_FALSE_FALSE"="DGE (no merges)",
+             "TRUE_FALSE_TRUE"="DGE (merges)",
+             "TRUE_TRUE_FALSE"="Both (no merges)",
+             "TRUE_TRUE_TRUE"="Both (merges)")
+
+df_wide <- df_sig_multi %>%
+  group_by(start, end) %>%
+  dplyr::count(sig_gene, sig_isoform, has_merge) %>%
+  mutate(result=map_sig[str_c(sig_gene,sig_isoform, has_merge, sep="_")]) %>%
+  ungroup() %>%
+  mutate(result=factor(result, levels=setNames(map_sig, NULL))) %>%
+  pivot_wider(id_cols=c("start", "end"), names_from="result", values_from="n", values_fill=0L) %>%
+  mutate("Coexpressed multi-UTR genes"=`NS (no merges)` + `NS (merges)` + 
+           `DTU (no merges)` + `DTU (merges)` + 
+           `DGE (no merges)` + `DGE (merges)` + 
+           `Both (no merges)` + `Both (merges)`) %>%
+  left_join(df_test_combined, by=c("start", "end")) %>%
+  dplyr::rename("Chi-squared.combined"=statistic, "p-value.combined"=p.value) %>%
+  left_join(df_test_merged, by=c("start", "end")) %>%
+  dplyr::rename("Chi-squared.merged"=statistic, "p-value.merged"=p.value) %>%
+  left_join(df_test_unmerged, by=c("start", "end")) %>%
+  dplyr::rename("Chi-squared.unmerged"=statistic, "p-value.unmerged"=p.value) %>%
+  dplyr::rename("Cell Type 1"=start,
+                "Cell Type 2"=end) %>%
+  select(`Cell Type 1`, `Cell Type 2`, `Coexpressed multi-UTR genes`,
+         all_of(setNames(map_sig, NULL)),
+         `Chi-squared.combined`, `p-value.combined`,
+         `Chi-squared.merged`, `p-value.merged`,
+         `Chi-squared.unmerged`, `p-value.unmerged`)
+
+df_wide
+```
+
+## Export Table
+```{r export_tbl}
+write_xlsx(df_wide, "output/tables/tbl3-extended-celltypes-chisq-results-t-tests-merges.xlsx")
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

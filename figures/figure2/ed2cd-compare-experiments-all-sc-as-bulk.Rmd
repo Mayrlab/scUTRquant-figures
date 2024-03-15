@@ -1,5 +1,5 @@
 ---
-title: "Compare Transcript TPMs - All Experiments"
+title: "Compare Transcript TPMs - All Experiments (SC as Bulk)"
 author: "Mervin Fansler"
 date: '`r format(Sys.time(), "%d %B %Y")`'
 output: 
@@ -45,11 +45,13 @@ library(rtracklayer)
 library(plyranges)
 library(SingleCellExperiment)
 library(BSgenome)
+library(tximport)
 library(Matrix)
 library(magrittr)
 library(tidyverse)
 library(ggbeeswarm)
 library(cowplot)
+library(ggrastr)
 ```
 
 ## Parameters
@@ -96,47 +98,35 @@ plot_corrs <- function (df, ylab="Spearman Correlation") {
 ```
 
 # Load Data
-```{r load_data}
-bleckwehl_samples=c("2i_ESC"="Bleckwehl21", "d2_EB"="Bleckwehl21_EB2", "d4_EB"="Bleckwehl21_EB4")
-guo_samples=c("mESC"="Guo19")
+## 10X Data
+```{r load_10X_data}
+tx2gene <- read_tsv("data/gtf/mca/utrome.e30.t5.gc25.pas3.f0.9999.w500.m200.tsv")
+sc_samples <- c("Guo19"="data/kallisto/guo19/abundance.h5",
+                "Bleckwehl21"="data/kallisto/bleckwehl21/abundance.h5")
+txsOut <- tximport(sc_samples, type="kallisto", txOut=FALSE, tx2gene=tx2gene[,1:2])
+genesOut <- tximport(sc_samples, type="kallisto", txOut=FALSE, tx2gene=tx2gene[,c(1,3)])
 
+cts_tx_sc <- txsOut$counts %>% Matrix(sparse=TRUE)
+#cts_gene_sc <- genesOut$counts %>% Matrix(sparse=TRUE)
+
+## need this only for annotations
+sce_bleckwehl <- readRDS("data/sce/utrome_mm10_v2/bleckwehl21.txs.Rds")
+df_utrome <- rowData(sce_bleckwehl)
+gr_utrome <- rowRanges(sce_bleckwehl)
+```
+
+```{r load_pas_data}
 gr_nam <- import_polyasite("data/bed/polyasite/nam14/mESC_WT.bed.gz")
 gr_lackford <- import_polyasite("data/bed/polyasite/lackford14/mESC_WT.bed.gz")
-
-sce_bleckwehl <- readRDS("data/sce/utrome_mm10_v2/bleckwehl21.txs.Rds") %>%
-  `[`(, .$sample_id %in% names(bleckwehl_samples))
-
-sce_guo <- readRDS("data/sce/utrome_mm10_v2/guo19.txs.Rds") %>%
-  `[`(, .$sample_id %in% names(guo_samples))
 ```
-
-## Merge Single Cell
-```{r merge_sces}
-colData(sce_bleckwehl) %<>% 
-  as_tibble %>%
-  mutate(sample_id=bleckwehl_samples[sample_id]) %>%
-  dplyr::select(cell_id, sample_id) %>%
-  column_to_rownames("cell_id") %>%
-  DataFrame()
-
-colData(sce_guo) %<>%
-  as_tibble %>%
-  mutate(sample_id=guo_samples[sample_id]) %>%
-  dplyr::select(cell_id, sample_id) %>%
-  column_to_rownames("cell_id") %>%
-  DataFrame()
-
-sce <- cbind(sce_guo, sce_bleckwehl)
-```
-
 
 ## Filter Data
 ```{r filter_data}
 # Filter to top two non-overlapping UTRs
-df_utr2 <- rowData(sce) %>%
+df_utr2 <- df_utrome %>%
   as_tibble %>%
   dplyr::select(transcript_id, gene_id, gene_name, is_ipa, utr_type_no_ipa) %>%
-  mutate(total_umis=rowSums(counts(sce)),
+  mutate(total_umis=rowSums(cts_tx_sc[transcript_id,]),
          tpm=total_umis*1e6/sum(total_umis, na.rm=TRUE)) %>%
   filter(!is_ipa, utr_type_no_ipa == 'multi') %>%
   group_by(gene_id) %>%
@@ -145,7 +135,7 @@ df_utr2 <- rowData(sce) %>%
   ungroup() %>%
   filter(utr_rank %in% 1:2)
 
-idx_utr2 <- rowRanges(sce)[df_utr2$transcript_id,] %>%
+idx_utr2 <- gr_utrome[df_utr2$transcript_id,] %>%
   unlist() %>%
   join_overlap_self_directed() %>%
   filter(transcript_id != transcript_id.overlap) %>%
@@ -162,29 +152,27 @@ idx_utr2 <- rowRanges(sce)[df_utr2$transcript_id,] %>%
 df_nam <- gr_nam %>%
   anchor_center() %>%
   mutate(width=50) %>% 
-  join_overlap_intersect_directed(x=unlist(rowRanges(sce)[idx_utr2,])) %>%
+  join_overlap_intersect_directed(x=unlist(gr_utrome[idx_utr2,])) %>%
   group_by(transcript_id) %>%
   summarise(tpm=sum(tpm, na.rm=TRUE)) %>%
   as_tibble() %>%
-  rename(Nam14=tpm)
+  dplyr::rename(Nam14=tpm)
 
 df_lackford <- gr_lackford %>%
   anchor_center() %>%
   mutate(width=50) %>% 
-  join_overlap_intersect_directed(x=unlist(rowRanges(sce)[idx_utr2,])) %>%
+  join_overlap_intersect_directed(x=unlist(gr_utrome[idx_utr2,])) %>%
   group_by(transcript_id) %>%
   summarise(tpm=sum(tpm, na.rm=TRUE)) %>%
   as_tibble() %>%
-  rename(Lackford14=tpm)
+  dplyr::rename(Lackford14=tpm)
 ```
 
 ## Compute Single-Cell
 ```{r compute_sc_tpm}
-M_samples <- fac2sparse(sce$sample_id) %>% t
+cts2tpm <- function (x) x %*% Diagonal(ncol(x), 1e6/colSums(x), names=TRUE)
 
-cts <- assay(sce, 'counts') %*% M_samples
-
-df_sc <- (cts %*% Diagonal(ncol(cts), 1e6/colSums(cts), names=TRUE)) %>% 
+df_sc <- cts_tx_sc %>% cts2tpm %>% 
   `[`(idx_utr2, , drop=FALSE) %>% 
   as.matrix %>% 
   as_tibble(rownames='transcript_id')
@@ -200,11 +188,7 @@ df_tpm <- df_sc %>%
             by='transcript_id') %>%
   select(transcript_id, gene_id, utr_rank, total_umis, everything())
 
-N_SAMPLES=ncol(df_tpm) - 5
-SAMPLES_BULK=c("Lackford14", "Nam14")
-SAMPLES_SC=c("Guo19", "Bleckwehl21")
-SAMPLE_COLS=c(SAMPLES_BULK, SAMPLES_SC)
-#SAMPLE_COLS=c("Nam14", "Lackford14", "Guo19", "Bleckwehl21", "Bleckwehl21_EB2", "Bleckwehl21_EB4")
+SAMPLE_COLS=c("Nam14", "Lackford14", "Guo19", "Bleckwehl21")
 MIN_TPM=0
 
 df_tpm_min <- df_tpm %>%
@@ -222,6 +206,8 @@ df_tpm_min <- df_tpm %>%
 ## TPM
 ### All genes
 ```{r plot_all_tpm, fig.width=3, fig.height=4, warning=FALSE}
+SAMPLE_COLS=c("Lackford14", "Nam14", "Guo19", "Bleckwehl21")
+SAMPLES_SC=c("Guo19", "Bleckwehl21")
 df_tpm_corrs <- df_tpm[,SAMPLE_COLS] %>%
   compute_column_corrs() %>%
   mutate(type=str_c(ifelse(sample1 %in% SAMPLES_SC, "sc", "bulk"),
@@ -230,7 +216,7 @@ df_tpm_corrs <- df_tpm[,SAMPLE_COLS] %>%
 
 plot_corrs(df_tpm_corrs, ylab="Inter-Experiment TPM Spearman Correlation")
 
-ggsave("output/figure2/ed2c-mescs-tpm-corrs-bars.pdf", width=3, height=4, dpi=300)
+ggsave("output/figure2/ed2c-mescs-tpm-corrs-bars-sc-as-bulk.pdf", width=3, height=4, dpi=300)
 ```
 
 ### Two-UTR Genes
@@ -243,7 +229,7 @@ df_tpm_twoutr_corrs <- df_tpm_min[,SAMPLE_COLS] %>%
 
 plot_corrs(df_tpm_twoutr_corrs, ylab="Inter-Experiment TPM Spearman Correlation")
 
-ggsave("output/figure2/ed2c-mescs-tpm-twoutr-corrs-bars.pdf", width=3, height=4, dpi=300)
+ggsave("output/figure2/ed2c-mescs-tpm-twoutr-corrs-bars-sc-as-bulk.pdf", width=3, height=4, dpi=300)
 ```
 
 ## LUI
@@ -284,7 +270,7 @@ df_lui_corrs <- df_lui[,SAMPLE_COLS_LUI] %>%
 
 plot_corrs(df_lui_corrs, ylab="Inter-Experiment LUI Spearman Correlation")
 
-ggsave("output/figure2/ed2d-mescs-lui-corrs-bars.pdf", width=3, height=4, dpi=300)
+ggsave("output/figure2/ed2d-mescs-lui-corrs-bars-sc-as-bulk.pdf", width=3, height=4, dpi=300)
 ```
 
 ### Plot Two-UTR
@@ -297,7 +283,7 @@ df_lui_twoutr_corrs <- df_lui_min[,SAMPLE_COLS_LUI] %>%
 
 plot_corrs(df_lui_twoutr_corrs, ylab="Inter-Experiment LUI Spearman Correlation")
 
-ggsave("output/figure2/ed2d-mescs-lui-twoutr-corrs-bars.pdf", width=3, height=4, dpi=300)
+ggsave("output/figure2/ed2d-mescs-lui-twoutr-corrs-bars-sc-as-bulk.pdf", width=3, height=4, dpi=300)
 ```
 
 # Table
@@ -306,7 +292,7 @@ full_join(df_tpm_corrs, df_lui_twoutr_corrs, by=c("sample1", "sample2", "type"),
           suffix=c(x="_TPM", y="_LUI")) %>%
   select(sample1, sample2, rho_TPM, rho_LUI, type) %>%
   arrange(type, sample1, sample2) %T>%
-  write_tsv("output/tables/tbl-mescs-bulk-sc-corrs.tsv")
+  write_tsv("output/tables/tbl-mescs-bulk-sc-corrs-sc-as-bulk.tsv")
 ```
 
 ---

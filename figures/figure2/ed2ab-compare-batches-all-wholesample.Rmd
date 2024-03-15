@@ -34,14 +34,15 @@ compute_column_corrs <- function (df, method="spearman", use="complete.obs") {
     pivot_longer(cols=-1, names_to="sample2", values_to="rho", values_drop_na=TRUE)
 }
 
-plot_corrs <- function (df, ylab="Spearman Correlation") {
+plot_corrs_all <- function (df, ylab="Spearman Correlation", ylimits=c(0,1)) {
   ggplot(df, aes(x=type, y=rho, fill=type)) +
     stat_summary(fun='mean', geom='bar', width=0.6, color='black') + 
     stat_summary(fun.data=mean_sdl, geom='errorbar', width=0.4) +
     geom_quasirandom(width=0.2, size=0.5) +
     geom_text(aes(x=type, label=str_c("N=", after_stat(count)), y=NULL), 
               stat="count", y=0.03, size=3) +
-    scale_y_continuous(limits=c(0,1), expand=expansion(add=c(0,0))) +
+    scale_y_continuous(expand=expansion(add=c(0,0))) +
+    coord_cartesian(ylim=ylimits) +
     labs(x=NULL, y=ylab) +
     guides(fill=FALSE)
 }
@@ -64,23 +65,18 @@ if (!("sample_id" %in% colnames(colData(sce))) & ("sample_id.x" %in% colnames(co
 ```{r compute_tpm}
 ## Sample Names
 SAMPLES_BULK <- c('HSCa', 'HSCb', 'HSCc', 'HSCd')
-SAMPLES_SC_14 <- str_c("14/Stem_SIGA", c("B", "C", "D"), "1")
-SAMPLES_SC_0 <- str_c("0_SIGA", c("B", "C", "D"), "1")
-SAMPLES_SC_COMBINED <- str_c("scRNA-seq ", c("1", "2", "3"))
-SAMPLES_SC <- c(SAMPLES_SC_14, SAMPLES_SC_0)
-SAMPLES_SC_ALL <- c(SAMPLES_SC, SAMPLES_SC_COMBINED)
+SAMPLES_SC <- str_c("scRNA-seq ", c("1", "2", "3"))
+SAMPLES_SC_RAW <- str_c("SIGA", c("B", "C", "D"), "1")
+SAMPLES_SC_NAMES <- setNames(SAMPLES_SC, SAMPLES_SC_RAW)
 
-M.cells_celltype_sample <- colData(sce) %>% 
-  as_tibble %$%
-  str_c(clusters, sample_id, sep="_") %>%
+M.cells_sample <- sce$sample_id %>%
   fac2sparse %>% t %>%
-  `[`(,SAMPLES_SC) %>%
-  cbind(.[,SAMPLES_SC_14] + .[,SAMPLES_SC_0]) %>%
-  `colnames<-`(SAMPLES_SC_ALL)
+  `[`(,SAMPLES_SC_RAW)
 
-cts.celltype_sample <- assay(sce, "normcounts") %*% M.cells_celltype_sample
-
-tpm.hsc.sc <- cts.celltype_sample %>% 
+cts.sample <- assay(sce, "normcounts") %*% M.cells_sample
+colnames(cts.sample) %<>% { SAMPLES_SC_NAMES[.] }
+  
+tpm.hsc.sc <- cts.sample %>% 
   { . %*% Diagonal(1e6/colSums(.), n=ncol(.), names=TRUE) } %>%
   as.matrix
 
@@ -104,7 +100,7 @@ df_tpm <- left_join(df_bulk, df_sc, by="transcript_id") %>%
 
 # LUI
 ```{r compute_lui}
-SAMPLE_COLS=c(SAMPLES_BULK, SAMPLES_SC_ALL)
+SAMPLE_COLS=c(SAMPLES_BULK, SAMPLES_SC)
 
 df_annots <- rowData(sce) %>% as_tibble %>%
   select(transcript_id, utr_position)
@@ -140,7 +136,7 @@ df_lui_two <- df_tpm %>%
 ## Combined
 ### TPM
 ```{r compare_tpm_combined, fig.width=3, fig.height=4, warning=FALSE}
-SAMPLE_COLS_TPM=c(SAMPLES_BULK, SAMPLES_SC_COMBINED)
+SAMPLE_COLS_TPM=c(SAMPLES_BULK, SAMPLES_SC)
 
 df_tpm_corrs <- df_tpm[,SAMPLE_COLS_TPM] %>% 
   compute_column_corrs %>%
@@ -148,15 +144,23 @@ df_tpm_corrs <- df_tpm[,SAMPLE_COLS_TPM] %>%
                ifelse(str_detect(sample2, "scRNA"), "sc", "bulk"),
                sep="-"))
 
-plot_corrs(df_tpm_corrs, ylab="Batch-Batch TPM Spearman Correlation")
+plot_corrs_all(df_tpm_corrs, ylab="Batch-Batch TPM Spearman Correlation")
 
-ggsave("output/figure2/ed2a-sommerkamp-tpm-corrs-bars.pdf",
+ggsave("output/figure2/ed2a-sommerkamp-tpm-corrs-bars-wholesample.pdf",
        width=3, height=4, dpi=300)
 ```
 
+```{r compare_tpm_combined_zoom, fig.width=3, fig.height=4, warning=FALSE}
+plot_corrs_all(df_tpm_corrs, ylab="Batch-Batch TPM Spearman Correlation", ylimits=c(0.8, 1))
+
+ggsave("output/figure2/ed2a-sommerkamp-tpm-corrs-bars-zoom-wholesample.pdf",
+       width=3, height=4, dpi=300)
+```
+
+
 ### LUI - All Multi-UTR
 ```{r compare_lui_combined, fig.width=3, fig.height=4, warning=FALSE}
-SAMPLE_COLS_LUI=c(SAMPLES_BULK, SAMPLES_SC_COMBINED)
+SAMPLE_COLS_LUI=c(SAMPLES_BULK, SAMPLES_SC)
 
 df_lui_corrs <- df_lui[,SAMPLE_COLS_LUI] %>% 
   compute_column_corrs %>%
@@ -164,16 +168,16 @@ df_lui_corrs <- df_lui[,SAMPLE_COLS_LUI] %>%
                ifelse(str_detect(sample2, "scRNA"), "sc", "bulk"),
                sep="-"))
 
-plot_corrs(df_lui_corrs, ylab="Batch-Batch LUI Spearman Correlation")
+plot_corrs_all(df_lui_corrs, ylab="Batch-Batch LUI Spearman Correlation")
 
 
-ggsave("output/figure2/ed2b-sommerkamp-lui-multiutr-corrs-bars.pdf",
+ggsave("output/figure2/ed2b-sommerkamp-lui-multiutr-corrs-bars-wholesample.pdf",
        width=3, height=4, dpi=300)
 ```
 
 ### LUI - Two-UTR
 ```{r compare_lui_twoutr_combined, fig.width=3, fig.height=4, warning=FALSE}
-SAMPLE_COLS_LUI=c(SAMPLES_BULK, SAMPLES_SC_COMBINED)
+SAMPLE_COLS_LUI=c(SAMPLES_BULK, SAMPLES_SC)
 
 df_lui_two_corrs <- df_lui_two[,SAMPLE_COLS_LUI] %>% 
   compute_column_corrs %>%
@@ -181,9 +185,9 @@ df_lui_two_corrs <- df_lui_two[,SAMPLE_COLS_LUI] %>%
                ifelse(str_detect(sample2, "scRNA"), "sc", "bulk"),
                sep="-"))
 
-plot_corrs(df_lui_two_corrs, ylab="Batch-Batch LUI Spearman Correlation")
+plot_corrs_all(df_lui_two_corrs, ylab="Batch-Batch LUI Spearman Correlation")
 
-ggsave("output/figure2/ed2b-sommerkamp-lui-twoutr-corrs-bars.pdf",
+ggsave("output/figure2/ed2b-sommerkamp-lui-twoutr-corrs-bars-wholesample.pdf",
        width=3, height=4, dpi=300)
 ```
 
@@ -193,8 +197,8 @@ ggsave("output/figure2/ed2b-sommerkamp-lui-twoutr-corrs-bars.pdf",
 full_join(df_tpm_corrs, df_lui_two_corrs, by=c("sample1", "sample2", "type"),
           suffix=c(x="_TPM", y="_LUI")) %>%
   select(sample1, sample2, rho_TPM, rho_LUI, type) %>%
-  arrange(type, sample1, sample2)  %T>%
-  write_tsv("output/tables/tbl-hspcs-bulk-sc-corrs.tsv")
+  arrange(type, sample1, sample2) %T>%
+  write_tsv("output/tables/tbl-hspcs-bulk-sc-corrs-wholesample.tsv")
 ```
 
 
