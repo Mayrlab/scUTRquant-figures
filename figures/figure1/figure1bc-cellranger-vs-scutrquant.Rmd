@@ -93,6 +93,10 @@ df_cells_srho <- df_counts %>%
   knitr::kable()
 ```
 
+### Export Table
+```{r export_tbl_cells}
+write_tsv(df_cells_srho, file="output/tables/tbl-sq-cr-sp-corr-umis-per-cell.tsv")
+```
 
 ## Plots
 ### Correlations
@@ -202,6 +206,11 @@ df_genes_prho <- df_counts %>%
 df_genes_srho <- df_counts %>%
   transmute(sample_id, rho=map2_dbl(sce_sq, sce_10x, compute_gene_correlation, method='spearman')) %T>%
   { print(knitr::kable(.)) }
+```
+
+### Export Table
+```{r export_tbl_genes}
+write_tsv(df_genes_srho, file="output/tables/tbl-sq-cr-sp-corr-umis-per-gene.tsv")
 ```
 
 
