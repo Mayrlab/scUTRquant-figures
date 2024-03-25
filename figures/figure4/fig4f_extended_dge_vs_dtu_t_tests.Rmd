@@ -44,6 +44,8 @@ df_dge <- read_tsv(TEST_DGE)
 
 ## Preprocessing
 ```{r prepare_data}
+gene_multi <- unique(df_dtu$gene_id)
+
 df_sig_dtu <- df_dtu %>%
   mutate(sig_isoform=qval < MAX_QVAL & abs(stat) >= MIN_DWUI) %>%
   select(gene_id, start, end, sig_isoform)
@@ -59,6 +61,14 @@ df_sig_all <- full_join(df_sig_dtu, df_sig_dge, by=c("gene_id", "start", "end"))
                            ifelse(sig_gene, "DGE", "NS"))),
          sig=factor(sig, levels=c("NS", "DTU", "Both", "DGE")),
          test_label=str_c(end, " vs ", start))
+
+df_sig_split <- df_sig_all %>%
+  filter(sig != "NS") %>%
+  mutate(is_single=!gene_id %in% gene_multi,
+         sig=as.character(sig),
+         sig=ifelse(sig != "DGE", sig,
+                    ifelse(is_single, "DGE (single)", "DGE (multi)")),
+         sig=factor(sig, levels=c("DTU", "Both", "DGE (multi)", "DGE (single)")))
 
 df_sig_multi <- left_join(df_sig_dtu, df_sig_dge, by=c("gene_id", "start", "end")) %>%
   replace_na(list(sig_isoform=FALSE, sig_gene=FALSE)) %>%
@@ -108,6 +118,25 @@ df_sig_all %>%
 ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-all.pdf", width=6, height=5, dpi=300)
 ```
 
+## Plot Positive - Split
+```{r plot_split, fig.width=7, fig.height=5}
+colvals <- c(DTU="#EEE643", Both="#2E9F72", 
+             `DGE (multi)`="#2170B1", `DGE (single)`="#512091") %>% {
+  setNames(colorspace::desaturate(., 0.2), names(.))
+}
+
+df_sig_split %>%
+  ggplot(aes(x=fct_infreq(test_label), fill=sig)) +
+  geom_bar(position='stack', color='black', size=0.1) +
+  scale_fill_manual(values=colvals) +
+  scale_x_discrete(guide=guide_axis(angle=90)) +
+  scale_y_continuous(expand=c(0,0,0.05,0)) +
+  labs(x="Compared Cell Types", y="Significant Genes", fill="Difference") +
+  theme_bw()
+
+ggsave("output/figure4/fig4f-celltypes-dge-dtu-compared-split.pdf", width=7, height=5, dpi=300)
+```
+
 ## Table 
 ```{r tbl_all_genes}
 map_sig <- c("FALSE_FALSE"="NS",
@@ -136,6 +165,10 @@ write_xlsx(df_wide_all, "output/tables/sup-tbl3-extended-celltypes-chisq-results
 # Multi-UTR Genes
 ## Plot Positive-Only
 ```{r plot_multi, fig.width=6, fig.height=5}
+colvals <- c(DTU="#EEE643", Both="#2E9F72", DGE="#2170B1") %>% {
+  setNames(colorspace::desaturate(., 0.2), names(.))
+}
+
 df_sig_multi %>%
   filter(sig != "NS") %>%
   ggplot(aes(x=fct_infreq(test_label), fill=sig)) +
