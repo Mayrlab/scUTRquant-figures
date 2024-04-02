@@ -21,7 +21,7 @@ The folders in the repository have the following purposes:
 - `numbers` - source code for generating numbers used in the manuscript
 - `tables` - source code for generating supplementary data and intermediate tables
 
-Input data files to these scripts are deposited to figshare.
+Input data files to these scripts are [deposited to figshare](https://doi.org/10.6084/m9.figshare.25529632).
 
 ### Source Code
 The primary source code is found in the `figures` and `tables` folders. 
