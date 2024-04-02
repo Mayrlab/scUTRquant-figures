@@ -1,0 +1,94 @@
+---
+title: "Fansler et al., Nature Communications, Suppl. Figure 8"
+author: "Sibylle Mitschka"
+output: 
+  html_document: 
+    code_folding: show
+    df_print: paged
+---
+
+Loading of R packages (not all may be required for this code section). 
+
+
+```{r message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(broom)
+library(Biostrings)
+library(ggpubr)
+library(rtracklayer)
+library(org.Hs.eg.db)
+library(RColorBrewer)
+library(biomaRt)
+library(GenomicFeatures)
+library(BSgenome)
+library(GeneOverlap)
+library(pheatmap)
+library(biomaRt)
+library(plyranges)
+library(ggrepel)
+library(writexl)
+library(gridExtra)
+library(readxl)
+
+```
+
+```{r}
+
+features <- read_xlsx("table_outputs/Suppl_Data9.xlsx", sheet=2)
+
+feature_analysis <- features %>% 
+  mutate(feature = as.factor(feature),
+         Result= as.factor(Result)) %>%
+  dplyr::count(feature, Result, .drop=FALSE) %>% 
+  group_by(feature) %>%
+  mutate(order= n[Result == "Promotes Shortening"]*(-1) + n[Result =="Promotes Lengthening"])
+
+feature_analysis_1 <- features %>% 
+  left_join(feature_analysis[,-c(2,3)], by=c("feature"))
+ 
+
+feature_analysis_plot <- feature_analysis_1 %>% 
+  ggplot(aes(x= as.factor(Cluster_ID), y=reorder(feature, order), col= Result))+ 
+  geom_point(size=3)+
+  scale_color_manual(values= c("#5e3c99", "#e66101", "lightgrey"))+
+  scale_x_discrete("Perturbation cluster", position="top")+
+  ylab("")+
+  theme_bw()
+
+feature_analysis_plot
+
+ggsave("Figure_outputs/Sup_Fig8.pdf", feature_analysis_plot, height= 4, width=7)
+
+
+```
+
+
+
+---
+
+# Runtime Details
+## Session Info
+<details>
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+</details>
+
+## Conda Environment
+<details>
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```
+</details>
+
+

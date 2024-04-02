@@ -1,0 +1,489 @@
+---
+title: "Fansler et al., Nature Communications, Suppl. Figures 4g-l"
+author: "Sibylle Mitschka"
+output: 
+  html_document: 
+    code_folding: show
+    df_print: paged
+---
+
+Loading of R packages and set working directory.
+
+```{r message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(broom)
+library(Biostrings)
+library(ggpubr)
+library(rtracklayer)
+library(org.Hs.eg.db)
+library(RColorBrewer)
+library(biomaRt)
+library(GenomicFeatures)
+library(BSgenome)
+library(GeneOverlap)
+library(pheatmap)
+library(biomaRt)
+library(plyranges)
+library(ggrepel)
+library(writexl)
+library(gridExtra)
+library(readxl)
+
+```
+
+
+How often are multi-UTR genes effectively single-UTR genes across the different cell types?
+
+```{r}
+
+### Deduce the effective number of cell number from the number of cells that the highest expressed genes are detected in.
+
+n_cells_tissue_hs <- read_delim("input_data/tpm_celltypes/hg38/merged_ncells_expr.tsv") %>%
+  pivot_longer(cols=c(8:410), names_to="Tissue", values_to = "cells") %>%
+  group_by(Tissue) %>%
+  slice_max(cells, with_ties=FALSE, n=1) %>%
+  ungroup() %>%
+  select(Tissue, cells) 
+
+### This creates the list of cell types that we want to analyze (234 cell types).
+
+Tissues_high_hs <- n_cells_tissue_hs %>%
+  dplyr::filter(cells>199) %>%
+  pull(Tissue) %>%
+  unlist()
+
+### Load all count data and subset to the relevant cell type samples.
+
+atlas_human_filt <- read_delim("input_data/tpm_celltypes/hg38/merged_tx_tpm_pointestimates.tsv.gz") %>%
+   pivot_longer(cols=c(21:423), names_to="Tissue", values_to = "TPM") %>%
+   dplyr::filter(Tissue %in% Tissues_high_hs)
+
+### Calculate total gene expression count with and without considering IPA expression
+
+atlas_human_gene_TPMs <- atlas_human_filt %>%
+  group_by(gene_name, gene_id, Tissue) %>%
+  summarize(TPM_gene = sum(TPM, na.rm=T),
+            TPM_gene_woIPA = sum(TPM[is_ipa==FALSE], na.rm=T))
+
+### Combine both data tables and calculate the fractional expression of each isoform within tissues
+
+atlas_human_filt1 <- atlas_human_filt %>%
+  left_join(., atlas_human_gene_TPMs, by=c("gene_name", "gene_id", "Tissue")) %>%
+  mutate(frac_tx_to_gene= TPM/TPM_gene,
+         frac_tx_to_gene_woIPA = TPM/TPM_gene_woIPA) 
+
+```
+
+```{r}
+
+### Filter to genes and tissues were the gene has a total expression level (excluding IPA) above 5 TPM. Restrict to isoforms with a relative expression ratio higher than 0.1. Here we exclude IPA isoforms.
+
+atlas_human_filt1.1 <- atlas_human_filt1 %>%
+  dplyr::filter(is_ipa==FALSE, 
+                TPM_gene_woIPA > 5,
+                frac_tx_to_gene_woIPA > 0.1)
+
+# For each gene, calculate the fraction of tissues at which it has more than 1 isoform (effectively multi-UTR)
+
+histo_genes_human <- atlas_human_filt1.1 %>%
+  dplyr::filter(atlas.utr_type=="multi") %>%
+  group_by(Tissue, gene_name) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(multi=ifelse(n>1, TRUE, FALSE)) %>%
+  group_by(gene_name) %>%
+  summarize(multi_ratio = mean(multi, na.rm=T))
+
+### Create a distribution of these ratios and define marks at 0.25 and 0.75.
+  
+histogram_human <- histo_genes_human %>% ggplot(aes(x = multi_ratio)) +
+  geom_histogram() +
+  scale_x_continuous(expand = c(0,0)) +
+  geom_vline(xintercept = 0.25) +
+  geom_vline(xintercept = 0.75) +
+  theme_bw()
+
+## Calculate the total fraction of multi-UTR genes that are either rarely Multi-UTR (less than a quarter of tissues), or mostly multi_UTYR (in more than three quarters of tissues). Save the histogram.
+
+histo_genes_human %>% summarize(mean = mean(multi_ratio<0.25))
+histo_genes_human %>% summarize(mean = mean(multi_ratio>0.75))
+
+ggsave("Figure_outputs/Sup_Fig4g.pdf", histogram_human)
+
+```
+
+Next, we are creating another visualization of the expression phenotype of multi-UTR genes across all the analyzed tissues. This will be a categorical evaluation with the following categories:
+1. The gene is expressed above 5 TPM and has more than 1 isoform with >0.1 expression ratio (teal).
+2. The gene is expressed above 5 TPM and has exactly 1 isoform with >0.1 expression ratio (purple).
+3. The gene is expressed <5TPM (white).
+
+```{r}
+
+### Count the number of isoforms per gene and tissue in a new table
+
+atlas_human_filt1_tx <- atlas_human_filt1.1 %>%
+  group_by(Tissue, gene_name, gene_id) %>%
+  count() %>%
+  ungroup()
+
+### To order the tissues in the final tile plot (heatmap), we want to calculate the fraction of genes that present as multi-UTR genes (from rarely to mostly). This is saved in "tissue_order".
+  
+atlas_human_multi <- atlas_human_filt1_tx %>%
+  group_by(Tissue) %>%
+  summarize(genes = length(gene_id),
+            multi_frac = mean(n>1),
+            multi_n = multi_frac*genes) %>%
+  dplyr::arrange(multi_frac)
+
+tissue_order_human <- atlas_human_multi %>%
+  pull(Tissue) %>%
+  unlist()
+
+### To order the genes in the final tile plot (heatmap), we will calculate the fraction of tissues in which the gene presents as multi-UTR gene (from rarely to mostly). This is saved in "gene_order_human". 
+
+gene_order_human <- atlas_human_filt1.1 %>%
+  group_by(Tissue, gene_name) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(multi=ifelse(n>1, TRUE, FALSE)) %>%
+  group_by(gene_name) %>%
+  summarize(multi_ratio = mean(multi, na.rm=T)) %>%
+  dplyr::arrange(multi_ratio)
+
+### We will further restrict the representation to those genes that have expression values above 5TPM in a large number of smaples.
+
+atlas_human_filt1_matrix <- atlas_human_filt1.1 %>%
+  dplyr::filter(atlas.utr_type=="multi") %>%
+  group_by(Tissue, gene_name) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(n=ifelse(n>2, 2, n))%>%
+  pivot_wider(id_cols=gene_name, names_from = Tissue, values_from=n, values_fill = 0) %>%
+  column_to_rownames(var="gene_name") %>%
+  dplyr::filter(rowSums(.,na.rm=T)>126) %>%
+  rownames_to_column(var="gene_name") %>%
+  left_join(gene_order_human, by= "gene_name") %>%
+  dplyr::arrange(multi_ratio) %>%
+  dplyr::select(tissue_order_human) 
+
+                    
+breaks=c(0, 0.9, 1.9, 2.9)
+color=c("white","#6a51a3","#99d8c9")
+
+heatmap_human <- pheatmap(atlas_human_filt1_matrix, 
+         breaks=breaks,
+         cluster_rows=F,
+         cluster_cols=F,
+         color=color,
+         show_rownames = FALSE, 
+         show_colnames = FALSE,
+         main= "Isoforms per gene and cell type (human)",
+         legend_breaks = 0:2, 
+         legend_labels = c("0","1", "2+"))
+
+heatmap_human
+
+ggsave("Figure_outputs/Sup_Fig4h.pdf", heatmap_human)
+
+```
+
+
+In order to analyze expression associated with different CS, we need to: 
+1. subset to those isoforms where merging does not occur (16,509 out of 49,410 isoforms).
+2. subset to the cell type samples with 200 and more cell types (234 out of 403 human cell types).
+3. restrict analysis to multi-UTR genes with 5 TPM or higher expression (variable across cell types).
+
+```{r}
+CS_hs <- read_csv("input_data/MWS_data/Human_MWS_CS_Annotation.csv")
+transcripts_hs <- read_excel("input_data/MWS_data/Human_Gene_Annotation.xlsx", sheet = "Transcripts - Human UTRome")
+
+### Subset to multi_UTR genes with >5 TPM total expression, add group labels according to annotation.
+
+atlas_human_filt2 <- atlas_human_filt1 %>%
+  dplyr::filter(is_ipa==FALSE, atlas.utr_type=="multi", TPM_gene_woIPA > 5) %>%
+  group_by(gene_name, gene_id, transcript_id) %>%
+  summarize(median_usage = median(frac_tx_to_gene_woIPA, na.rm=TRUE),
+            mean_usage = mean(frac_tx_to_gene_woIPA, na.rm=TRUE),
+            sd_usage = sd(frac_tx_to_gene_woIPA, na.rm=TRUE)) %>%
+  left_join(transcripts_hs, by= c("gene_name", "gene_id", "transcript_id")) %>%
+  mutate(n_merged_tx= str_count(merged_txs, "ENST")) %>%
+  dplyr::filter(n_merged_tx==1, atlas.utr_type=="multi") %>%
+  left_join(CS_hs, by= c("gene_name", "gene_id", "transcript_id")) %>%
+  mutate(category= case_when(n_celltypes_tx>0 & is_novel==FALSE ~ "Common",
+    n_celltypes_tx==0 & is_novel==FALSE ~ "GENCODE-only",
+    n_celltypes_tx>0 & is_novel==TRUE ~ "MWS-only"),
+    category= factor(category, levels=c("Common", "MWS-only", "GENCODE-only"))) %>%
+  ungroup()
+
+### Plot fractional expression (proxy for usage) of Common, MWS-only and GENCODE-only isoforms.
+
+plot_expr_commonunique_hs <- atlas_human_filt2 %>% 
+  ggplot(aes(x= median_usage, y= reorder(category, median_usage))) +
+  geom_boxplot(fill= "#bcbddc", outlier.shape = NA) +
+  scale_y_discrete("CS category") +
+  scale_x_continuous("Median expression ratio (Human)") +
+  theme_bw()
+plot_expr_commonunique_hs
+
+### calculate median fractional expression in each group.
+
+atlas_human_filt2 %>% group_by(category) %>%
+  summarize(median(median_usage, na.rm=TRUE))
+
+### calculate fraction of minor isoforms with a median use above 0.33.
+
+atlas_human_filt2 %>% 
+  dplyr::filter(cs_usage_class=="minor") %>%
+  summarize(mean = mean(median_usage >0.33))
+
+### Plot fractional expression of major and minor isoforms.
+
+plot_expr_majorminor_hs <- atlas_human_filt2 %>%
+  dplyr::filter(!is.na(cs_usage_class)) %>%
+  ggplot(aes(x= median_usage, y=reorder(cs_usage_class, median_usage), fill=cs_usage_class)) +
+  geom_boxplot(outlier.shape = NA) +
+  scale_fill_manual(values=c("cadetblue", "lightgrey"))+
+  scale_y_discrete("CS category") +
+  scale_x_continuous("Median expression ratio (Human)") +
+  theme_bw()
+plot_expr_majorminor_hs
+
+atlas_human_filt2 %>% 
+  group_by(cs_usage_class) %>%
+  dplyr::filter(!is.na(cs_usage_class)) %>%
+  summarize(median(median_usage, na.rm=TRUE))
+
+human_expr_plots <- grid.arrange(plot_expr_majorminor_hs, plot_expr_commonunique_hs)
+
+ggsave("Figure_outputs/Sup_Fig4k.pdf", human_expr_plots)
+
+```
+
+```{r}
+CS_mm <- read_csv("input_data/MWS_data/Mouse_MWS_CS_Annotation.csv")
+transcripts_mm <- read_excel("input_data/MWS_data/Mouse_Gene_Annotation.xlsx", sheet = "Transcripts - Mouse UTRome")
+
+### Deduce cell number from the number of cells the highest expressed genes are expressed in.
+
+n_cells_tissue_mm <- read_delim("input_data/tpm_celltypes/mm10/merged_ncells_expr.tsv") %>%
+  pivot_longer(cols=c(8:152), names_to="Tissue", values_to = "cells") %>%
+  group_by(Tissue) %>%
+  slice_max(cells, with_ties=FALSE, n=1) %>%
+  ungroup() %>%
+  select(Tissue, cells) 
+
+### This creates the list of cell types that we want to analyze (82 cell types).
+
+Tissues_high_mm <- n_cells_tissue_mm %>%
+  dplyr::filter(cells>199) %>%
+  pull(Tissue) %>%
+  unlist()
+
+### load all cell type data and subset to the one with more than 200 cells.
+
+atlas_mouse_filt <- read_delim("input_data/tpm_celltypes/mm10/merged_tx_tpm_pointestimates.tsv.gz") %>%
+   pivot_longer(cols=c(21:165), names_to="Tissue", values_to = "TPM") %>%
+   dplyr::filter(Tissue %in% Tissues_high_mm)
+
+### Calculate total expression per gene for each tissue.
+
+atlas_mouse_gene_TPMs <- atlas_mouse_filt %>%
+  group_by(gene_name, gene_id, Tissue) %>%
+  summarize(TPM_gene = sum(TPM, na.rm=T),
+            TPM_gene_woIPA = sum(TPM[is_ipa==FALSE], na.rm=T))
+
+### Combine both data and calculate the fractional use of each isoform per tissue.
+
+atlas_mouse_filt1 <- atlas_mouse_filt %>%
+  left_join(., atlas_mouse_gene_TPMs, by=c("gene_name", "gene_id", "Tissue")) %>%
+  mutate(frac_tx_to_gene= TPM/TPM_gene,
+         frac_tx_to_gene_woIPA = TPM/TPM_gene_woIPA) 
+
+### Subset to multi_UTR genes with >5 TPM total expression, add group labels according to annotation.
+
+atlas_mouse_filt2 <- atlas_mouse_filt1 %>%
+  dplyr::filter(is_ipa==FALSE, atlas.utr_type=="multi", TPM_gene_woIPA > 5) %>%
+  group_by(gene_name, gene_id, transcript_id) %>%
+  summarize(median_usage = median(frac_tx_to_gene_woIPA, na.rm=TRUE),
+            mean_usage = mean(frac_tx_to_gene_woIPA, na.rm=TRUE),
+            sd_usage = sd(frac_tx_to_gene_woIPA, na.rm=TRUE)) %>%
+  left_join(transcripts_mm, by= c("gene_name", "gene_id", "transcript_id")) %>%
+  mutate(n_merged_tx= str_count(merged_txs, "ENSMUST")) %>%
+  dplyr::filter(n_merged_tx==1, atlas.utr_type=="multi") %>%
+  left_join(CS_mm, by= c("gene_name", "gene_id", "transcript_id")) %>%
+  mutate(category= case_when(n_celltypes_tx>0 & is_novel==FALSE ~ "Common",
+    n_celltypes_tx==0 & is_novel==FALSE ~ "GENCODE-only",
+    n_celltypes_tx>0 & is_novel==TRUE ~ "MWS-only"),
+    category= factor(category, levels=c("Common", "MWS-only", "GENCODE-only"))) %>%
+  ungroup()
+
+### Plot fractional expression (proxy for expr) of Common, MWS-only and GENCODE-only isoforms.
+
+plot_expr_commonunique_mm <- atlas_mouse_filt2 %>% 
+  ggplot(aes(x= median_usage, y=reorder(category, median_usage))) +
+  geom_boxplot(fill= "#bcbddc", outlier.shape = NA) +
+  scale_x_continuous("Median expression ratio (Mouse)") +
+  scale_y_discrete("CS category") +
+  theme_bw()
+plot_expr_commonunique_mm
+
+### calculate median expr in each group.
+
+atlas_mouse_filt2 %>% 
+  group_by(category) %>% 
+  summarize(median(median_usage, na.rm=TRUE))
+
+### calculate fraction of minor isoforms with a median use above 0.33.
+
+atlas_mouse_filt2 %>% 
+  dplyr::filter(cs_usage_class=="minor") %>%
+  summarize(mean = mean(median_usage >0.33))
+
+### Plot fractional expression of major and minor isoforms.
+
+plot_expr_majorminor_mm <- atlas_mouse_filt2 %>%
+  dplyr::filter(!is.na(cs_usage_class)) %>%
+  ggplot(aes(x= median_usage, y=reorder(cs_usage_class, median_usage), fill=cs_usage_class)) +
+  geom_boxplot(outlier.shape = NA) +
+  scale_fill_manual(values=c("cadetblue", "lightgrey"))+
+  scale_x_continuous("Median expression ratio (Mouse)") +
+  scale_y_discrete("CS category") +
+  theme_bw()
+plot_expr_majorminor_mm
+
+atlas_mouse_filt2 %>% 
+  group_by(cs_usage_class) %>%
+  dplyr::filter(!is.na(cs_usage_class)) %>%
+  summarize(median(median_usage, na.rm=TRUE))
+
+mouse_expr_plots <- grid.arrange(plot_expr_majorminor_mm, plot_expr_commonunique_mm)
+
+ggsave("Figure_outputs/Sup_Fig4l.pdf", mouse_expr_plots)
+
+```
+
+Repeat analysis for mouse genes and tissues.
+
+```{r}
+
+atlas_mouse_filt1.1 <- atlas_mouse_filt1 %>%
+  dplyr::filter(is_ipa==FALSE, 
+                TPM_gene_woIPA > 5,
+                frac_tx_to_gene_woIPA > 0.1)
+
+histo_genes_mouse <- atlas_mouse_filt1.1 %>%
+  dplyr::filter(atlas.utr_type=="multi") %>%
+  group_by(Tissue, gene_name) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(multi=ifelse(n>1, TRUE, FALSE)) %>%
+  group_by(gene_name) %>%
+  summarize(multi_ratio = mean(multi, na.rm=T))
+  
+histogram_mouse <- histo_genes_mouse %>% 
+  ggplot(aes(x = multi_ratio)) +
+  geom_histogram() +
+  scale_x_continuous(expand = c(0,0)) +
+  geom_vline(xintercept = 0.25) +
+  geom_vline(xintercept = 0.75) +
+  theme_bw()
+histogram_mouse
+
+histo_genes_mouse %>% summarize(mean = mean(multi_ratio<0.25))
+histo_genes_mouse %>% summarize(mean = mean(multi_ratio>0.75))
+
+ggsave("Figure_outputs/Sup_Fig4i.pdf", histogram_mouse)
+
+```
+
+
+
+```{r}
+
+atlas_mouse_filt1_tx <- atlas_mouse_filt1.1 %>%
+  group_by(Tissue, gene_name, gene_id) %>%
+  count() %>%
+  ungroup()
+
+atlas_mouse_multi <- atlas_mouse_filt1_tx %>%
+  group_by(Tissue) %>%
+  summarize(genes = length(gene_id),
+            multi_frac = mean(n>1),
+            multi_n = multi_frac*genes) %>%
+  dplyr::arrange(multi_frac)
+
+tissue_order_mouse <- atlas_mouse_multi %>%
+  pull(Tissue) %>%
+  unlist()
+
+gene_order_mouse <- atlas_mouse_filt1.1 %>%
+  group_by(Tissue, gene_name) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(multi=ifelse(n>1, TRUE, FALSE)) %>%
+  group_by(gene_name) %>%
+  summarize(multi_ratio = mean(multi, na.rm=T)) %>%
+  dplyr::arrange(multi_ratio)
+
+
+atlas_mouse_filt1_matrix <- atlas_mouse_filt1.1 %>%
+  dplyr::filter(atlas.utr_type=="multi") %>%
+  group_by(Tissue, gene_name) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(n=ifelse(n>2, 2, n))%>%
+  pivot_wider(id_cols=gene_name, names_from = Tissue, values_from=n) %>%
+  column_to_rownames(var="gene_name") %>%
+  dplyr::filter(rowMeans(is.na(.)) < 0.5) %>%
+  rownames_to_column(var="gene_name") %>%
+  replace(is.na(.),0) %>%
+  left_join(gene_order_mouse, by= "gene_name") %>%
+  dplyr::arrange(multi_ratio) %>%
+  dplyr::select(tissue_order_mouse)
+
+breaks=c(0, 0.9, 1.9, 2.9)
+color=c("white","#6a51a3","#99d8c9")
+
+heatmap_mouse <- pheatmap(atlas_mouse_filt1_matrix,
+         breaks=breaks,
+         color=color,
+         cluster_rows=F,
+         cluster_cols=F,
+         show_rownames = FALSE, 
+         show_colnames = FALSE,
+         main= "Isoforms per gene and cell type (mouse)",
+         legend_breaks = 0:2, 
+         legend_labels = c("0","1", "2+"))
+
+ggsave("Figure_outputs/Sup_Fig4j.pdf", heatmap_mouse)
+                    
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+<details>
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+</details>
+
+## Conda Environment
+<details>
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```
+</details>
+

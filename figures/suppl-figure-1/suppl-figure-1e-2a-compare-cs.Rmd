@@ -1,0 +1,415 @@
+---
+title: "Fansler et al., Nature Communications, Suppl. Figure 1e"
+author: "Sibylle Mitschka"
+output: 
+  html_document: 
+    code_folding: show
+    df_print: paged
+---
+
+
+Loading of R packages (not all may be required for this code section).
+
+```{r message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(broom)
+library(Biostrings)
+library(ggpubr)
+library(rtracklayer)
+library(org.Hs.eg.db)
+library(RColorBrewer)
+library(biomaRt)
+library(GenomicFeatures)
+library(BSgenome)
+library(GeneOverlap)
+library(pheatmap)
+library(biomaRt)
+library(plyranges)
+library(ggrepel)
+library(writexl)
+library(gridExtra)
+library(readxl)
+
+```
+
+
+Step 1: Loading source data files
+
+Database comparison. We load information for all three atlases and convert them to GRanges. For the polyA_DB, we also need to convert the entries from Hg19 to Hg38 reference coordinates using the appropriate liftover chain files.
+
+```{r warning=FALSE}
+
+### MWS cleavage site atlas
+
+CS_hs <- read_csv("input_data/MWS_data/Human_MWS_CS_Annotation.csv")
+
+CS_gr_hs <- makeGRangesFromDataFrame(CS_hs,
+                         keep.extra.columns=TRUE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field="seq",
+                         start.field="end_3p",
+                         end.field="end_3p",
+                         strand.field="strand",
+                         starts.in.df.are.0based=FALSE)
+
+### PolyAsite2.0
+
+url <- "https://polyasite.unibas.ch/download/atlas/2.0/GRCh38.96/atlas.clusters.2.0.GRCh38.96.tsv.gz"
+
+polA_site_hs <- read_tsv(url, col_names=TRUE) %>% 
+  dplyr::select(c(1:13))
+
+colnames(polA_site_hs) <- c("chromosome", "start", "end", "cluster_id", "TPM", "strand", 
+                         "PAS_pos", "perc_samples_detected", "no_samples_detected","type", 
+                         "gene_name", "gene_id", "PAS")
+
+polA_site_gr_hs <- makeGRangesFromDataFrame(polA_site_hs,
+                         keep.extra.columns=TRUE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field= "Chromosome",
+                         start.field="start",
+                         end.field= "end",
+                         strand.field= "strand",
+                         starts.in.df.are.0based=FALSE)
+
+seqlevelsStyle(polA_site_gr_hs) <- "UCSC"
+
+### PolyA DB v3.2
+
+url <- "https://exon.apps.wistar.org/polya_db/v3/download/3.2/human_pas.zip"
+temp <- tempfile()
+download.file(url,temp)
+polA_db_hs <- read_tsv(temp)
+unlink(temp)
+
+polyA_db_gr_hs <- makeGRangesFromDataFrame(polA_db_hs,
+                         keep.extra.columns=TRUE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field= "Chromosome",
+                         start.field="Position",
+                         end.field= "Position",
+                         strand.field="Strand",
+                         starts.in.df.are.0based=FALSE)
+
+seqlevelsStyle(polyA_db_gr_hs) <- "UCSC"
+
+#### perform liftover of granges from Hg19 to Hg38.
+
+path = "input_data/annotation/hg19ToHg38.over.chain"
+
+ch <- import.chain(path)
+
+polyA_db_gr_38_hs <-  rtracklayer::liftOver(polyA_db_gr_hs, ch) %>% 
+  unlist()
+
+```
+
+
+```{r}
+
+### Intersect each database with MWS CS atlas and determine minimal distance to CS both upstream or downstream.
+### Create Metaplot centered on the MWS CS (0nt distance).
+
+CS_gr_polyA_db_hs <- CS_gr_hs %>% 
+  add_nearest_distance_upstream(polyA_db_gr_38_hs, name= "distance_up") %>% 
+  add_nearest_distance_downstream(polyA_db_gr_38_hs, name= "distance_down") %>%
+  as.data.frame() %>%
+  mutate(Type = case_when(is_novel == TRUE ~ "MWS only",
+                          is_novel == FALSE & n_celltypes_tx >0  ~ "Common",
+                          is_novel == FALSE & n_celltypes_tx == 0  ~ "Gencode only"),
+    distance = case_when(distance_up <= distance_down | is.na(distance_down) ~ (-1) * distance_up,
+                              is.na(distance_up) | distance_up > distance_down ~ distance_down,
+                              .default = NA )) %>%
+  dplyr::filter(!is.na(distance)) %>%
+  ggplot(aes(x= distance, col= Type)) +
+  geom_density(size=1)+
+  ggtitle("PolyA DBv3 (all)") +
+  coord_cartesian(xlim=c(-50,50), clip="on")+
+  scale_x_continuous("Distance to CS [nts]", limits=c(-100,100))+
+  theme_bw()
+CS_gr_polyA_db_hs
+
+CS_gr_polyA_site_hs <- CS_gr_hs %>% 
+  add_nearest_distance_upstream(polA_site_gr_hs, name= "distance_up") %>% 
+  add_nearest_distance_downstream(polA_site_gr_hs, name= "distance_down") %>%
+  as.data.frame() %>%
+  mutate(Type = case_when(is_novel == TRUE ~ "MWS only",
+                          is_novel == FALSE & n_celltypes_tx >0  ~ "Common",
+                          is_novel == FALSE & n_celltypes_tx == 0  ~ "Gencode only"),
+         distance = case_when(distance_up <= distance_down | is.na(distance_down) ~ (-1) * distance_up,
+                              is.na(distance_up) | distance_up > distance_down ~ distance_down,
+                              .default = NA )) %>%
+  ggplot(aes(x= distance, col=Type)) +
+  geom_density(size=1)+
+  ggtitle("PolyASite 2.0 (all)") +
+  coord_cartesian(xlim=c(-50,50), clip="on")+
+  scale_x_continuous("Distance to CS [nts]", limits=c(-100,100))+
+  theme_bw()
+CS_gr_polyA_site_hs
+
+Sup_Fig1e <- grid.arrange(CS_gr_polyA_db_hs, 
+             CS_gr_polyA_site_hs, nrow=2, ncol=1)  
+
+ggsave("Figure_outputs/Sup_Fig1e.pdf", Sup_Fig1e)
+
+```
+
+Next, we are comparing the number of CS per gene for all three databases. For the MWS atlas, we are subsetting the pool to "major" CS (39,978 transcripts in 17,049 genes). 
+For other databases we are restricting this analysis to protein-coding genes for which we rely on the gene labels that have been assigned by the individual databases.
+
+```{r}
+
+### Identify protein-coding genes and remove their gene_ID version labels.
+
+gencode <- makeTxDbFromGFF("input_data/annotation/gencode.v39.mRNA_ends_found.gff3.gz")
+
+protein_coding_genes <- names(cdsBy(gencode, "gene")) %>% sub('\\.[0-9]*$', '', .)
+         
+
+## Prepare MWS atlas table (These CS are already restrcited to protein-coding genes).
+MWS_major_census_hs <- CS_hs %>% 
+  dplyr::filter(cs_usage_class == "major") %>%
+  count(gene_id) %>%
+  count(n) %>%
+  mutate(isoforms= ifelse(n<10, n, ">9")) %>%
+  group_by(isoforms) %>%
+  summarize(genes= sum(nn)) %>%
+  mutate(DB= "MWS atlas, major isoforms")
+
+### Protein-coding genes in MWS: 17049
+CS_hs %>% 
+  dplyr::filter(cs_usage_class == "major") %>%
+  count(gene_id) %>%
+  nrow()
+
+### Prepare PolyA Site 2.0 table and filter to protein-coding genes.
+polyA_site_census_hs <- polA_site_hs %>% 
+  dplyr::filter(gene_id %in% protein_coding_genes) %>%
+  count(gene_id) %>%
+  count(n) %>%
+  mutate(isoforms= ifelse(n<10, n, ">9")) %>%
+  group_by(isoforms) %>%
+  summarize(genes= sum(nn)) %>%
+  mutate(DB= "PolyASite 2.0")
+
+### Protein-coding genes in PolyASite2.0: 17351
+polA_site_hs %>% 
+  dplyr::filter(gene_id %in% protein_coding_genes) %>%
+  count(gene_id) %>%
+  nrow()
+
+### Prepare PolyA_DB table and filter to protein-coding genes.
+polA_db_census_hs <- polA_db_hs %>% 
+  dplyr::filter(`Ensemble ID` %in% protein_coding_genes) %>%
+  count(`Gene Symbol`) %>%
+  count(n) %>%
+  mutate(isoforms= ifelse(n<10, n, ">9")) %>%
+  group_by(isoforms) %>%
+  summarize(genes= sum(nn)) %>%
+  mutate(DB= "PolyA_DB V3.2")
+
+### Protein-coding genes in PolyASite2.0: 16872
+polA_db_hs %>% 
+  dplyr::filter(`Ensemble ID` %in% protein_coding_genes) %>%
+  count(`Gene Symbol`) %>%
+  nrow()
+
+### Combine all database tables into a single dataframe. Create a catorgory for genes with 10 or more CS.
+
+hs_census <- rbind(polA_db_census_hs, polyA_site_census_hs, MWS_major_census_hs) %>%
+  mutate(isoforms =factor(isoforms, levels=c(seq(1:9), ">9"))) %>%
+  dplyr::filter(!is.na(isoforms))
+
+### Create a distribution plot for human database entries. Save the output.
+
+plot_hs <- ggplot(hs_census, aes(x=isoforms, y=genes/1000, fill=DB))+ 
+  geom_col(position="dodge", col="black")+ 
+  scale_y_continuous(limits = c(0,10), "Genes x 1,000 [human]", expand = c(0,0)) +
+  scale_x_discrete("Number of CS per gene") +
+  scale_fill_manual(values=c("#00a79d", "#756bb0", "#bcbddb"))+
+  theme_bw()
+plot_hs
+
+ggsave("Figure_outputs/Fig1h.pdf", plot_hs)
+
+```
+
+Survey of CS per gene in mouse (Supplementary figure 1j)
+
+```{r}
+
+### Loading of mouse MWS cleavage site atlas data. Converting to GRanges.
+
+CS_mm <- read_csv("input_data/MWS_data/Mouse_MWS_CS_Annotation.csv")
+
+CS_gr_mm <- makeGRangesFromDataFrame(CS_mm,
+                         keep.extra.columns=TRUE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field="seq",
+                         start.field="end_3p",
+                         end.field="end_3p",
+                         strand.field="strand",
+                         starts.in.df.are.0based=FALSE)
+
+### Identify protein-coding genes and remove gene_ID version labels.
+
+gencode_mouse <- makeTxDbFromGFF("input_data/annotation/mca2/gff/gencode.vM25.mRNA_ends_found.gff3.gz")
+
+protein_coding_genes_mm <- names(cdsBy(gencode_mouse, "gene")) %>% sub('\\.[0-9]*$', '', .)
+
+MWS_major_census_mm <- CS_mm %>% 
+  dplyr::filter(cs_usage_class == "major") %>%
+  count(gene_id) %>%
+  count(n) %>%
+  mutate(isoforms= ifelse(n<10, n, ">9")) %>%
+  group_by(isoforms) %>%
+  summarize(genes= sum(nn)) %>%
+  mutate(DB= "MWS atlas, major isoforms")
+
+### Protein-coding genes in PolyASite2.0: 17903
+
+CS_mm %>% 
+  dplyr::filter(cs_usage_class == "major") %>%
+  count(gene_id) %>%
+  nrow()
+
+url <- "https://polyasite.unibas.ch/download/atlas/2.0/GRCm38.96/atlas.clusters.2.0.GRCm38.96.tsv.gz"
+polA_site_mm <- read_tsv(url, col_names=TRUE) %>% 
+  dplyr::select(c(1:13))
+
+
+colnames(polA_site_mm) <- c("chromosome", "start", "end", "cluster_id", "TPM", "strand", 
+                         "PAS_pos", "perc_samples_detected", "no_samples_detected","type", 
+                         "gene_name", "gene_id", "PAS")
+
+polA_site_gr_mm <- makeGRangesFromDataFrame(polA_site_mm,
+                                        keep.extra.columns=TRUE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field= "Chromosome",
+                         start.field="start",
+                         end.field= "end",
+                         strand.field= "strand",
+                         starts.in.df.are.0based=FALSE)
+
+seqlevelsStyle(polA_site_gr_mm) <- "UCSC"
+
+### Prepare summarized data table for PolyA Site2.0
+
+polyA_site_census_mm <- polA_site_mm %>% 
+  dplyr::filter(gene_id %in% protein_coding_genes_mm) %>%
+  count(gene_id) %>%
+  count(n) %>%
+  mutate(isoforms= ifelse(n<10, n, ">9")) %>%
+  group_by(isoforms) %>%
+  summarize(genes= sum(nn)) %>%
+  mutate(DB= "PolyASite 2.0")
+
+### Protein-coding genes in PolyASite2.0: 17736
+polA_site_mm %>% 
+  dplyr::filter(gene_id %in% protein_coding_genes_mm) %>%
+  count(gene_id) %>%
+  nrow()
+
+
+#### PolyA_DB_v3.2
+
+url <- "https://exon.apps.wistar.org/polya_db/v3/download/3.2/mouse_pas.zip"
+temp <- tempfile()
+download.file(url,temp)
+polA_db_mm <- read_tsv(temp)
+unlink(temp)
+
+#polA_db_mm <- read_tsv("input_data/annotation/polyA_db_mouse.PAS.txt")
+
+polyA_db_gr_mm <- makeGRangesFromDataFrame(polA_db_mm,
+                         keep.extra.columns=TRUE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field= "Chromosome",
+                         start.field="Position",
+                         end.field= "Position",
+                         strand.field="Strand",
+                         starts.in.df.are.0based=FALSE)
+
+seqlevelsStyle(polyA_db_gr_mm) <- "UCSC"
+
+### perform liftover of granges from Mm9 to Mm10, respectively.
+
+path = "input_data/annotation/mm9ToMm10.over.chain"
+ch = import.chain(path)
+
+polyA_db_gr_10_mm <-  rtracklayer::liftOver(polyA_db_gr_mm, ch) %>% 
+  unlist()
+
+### Protein-coding genes in PolyASite2.0: 17736
+polA_db_mm %>% 
+  dplyr::filter(`Ensemble ID` %in% protein_coding_genes_mm) %>%
+  count(`Gene Symbol`) %>%
+  nrow()
+
+polA_db_census_mm <- polA_db_mm %>% 
+  dplyr::filter(`Ensemble ID` %in% protein_coding_genes_mm) %>%
+  count(`Gene Symbol`) %>%
+  count(n) %>%
+  mutate(isoforms= ifelse(n<10, n, ">9")) %>%
+  group_by(isoforms) %>%
+  summarize(genes= sum(nn)) %>%
+  mutate(DB= "PolyA_DB V3.2")
+
+### Summarize mouse data
+
+mm_census <- rbind(polA_db_census_mm, polyA_site_census_mm, MWS_major_census_mm) %>%
+  mutate(isoforms =factor(isoforms, levels=c(seq(1:9), ">9"))) %>%
+  dplyr::filter(!is.na(isoforms))
+
+### Create plot and save pdf file
+
+plot_mm <- ggplot(mm_census, aes(x=isoforms, y=genes/1000, fill=DB))+ 
+  geom_col(position="dodge", col="black")+ 
+  #ggtitle("Mouse") +
+  scale_y_continuous(limits = c(0,10), "Genes x 1,000 [mouse]", expand = c(0,0)) +
+  scale_x_discrete("Number of CS per gene") +
+  scale_fill_manual(values=c("#00a79d", "#756bb0", "#bcbddb"))+
+  theme_bw()
+
+plot_mm
+
+ggsave("Figure_outputs/Sup_Fig1j.pdf", plot_mm)
+
+```
+
+
+
+---
+
+# Runtime Details
+## Session Info
+<details>
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+</details>
+
+## Conda Environment
+<details>
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```
+</details>
+
+
