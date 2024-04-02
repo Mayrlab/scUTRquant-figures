@@ -1,0 +1,92 @@
+---
+title: "Fansler et al., Nature Communications, Suppl. Data 7"
+author: "Sibylle Mitschka"
+output: 
+  html_document: 
+    code_folding: show
+    df_print: paged
+---
+
+Loading of R packages (not all may be required for this code section). 
+
+```{r}
+
+library(tidyverse)
+library(broom)
+library(ggpubr)
+library(RColorBrewer)
+library(writexl)
+library(readxl)
+
+```
+
+load data file and generate summarized data table.
+
+```{r message=FALSE, warning=FALSE}
+
+
+### this data file comprises the gene expression counts and WUI and pct_ipa values for all sgRNA and gene pair conditions
+
+df_WUIess <-readRDS("input_data/df_wui_kd6_essential_ui10.Rds")
+
+### This file provides the cluster identity for a subset of the perturbations (836 genes) which will be used to summarize the data on the cluster level, the clsuter_ids provided in this file do not match the final cluster numbers presented in the paper
+
+target_clus <- read.csv("input_data/df_target_nnclusters_kd6_essential_ui10.csv") %>% 
+  mutate(cluster_id_target= as.factor(cluster_id))
+
+### This file provides the names for the clusters and the conversion of the primary cluster id to the final cluster id used in the paper.
+
+names <- read.csv("input_data/names_perturbation_cluster.csv") %>% 
+  mutate(cluster_id_target = as.factor(cluster_id_target))
+
+```
+
+```{r}
+
+n_cells_summary<- df_WUIess %>%
+  select(target_gene, target_gene_id, sgID_AB, n_cells) %>%
+  distinct()
+
+APA_regulator_set <- 
+  left_join(target_clus, n_cells_summary, by =c("target_gene", "target_gene_id", "sgID_AB")) %>%
+  left_join(names, by= "cluster_id_target") %>%
+  dplyr::rename(Gene_symbol =	target_gene,
+                Ensembl_ID  = target_gene_id,
+                Cluster_id  = order_heatm_new,
+                Cluster_name = clus_name) %>%
+  dplyr::select(Gene_symbol,Ensembl_ID,sgID_AB, n_cells, Cluster_id, Cluster_name)
+
+write_xlsx(APA_regulator_set, "table_outputs/Suppl_Data7.xlsx")
+
+```
+
+The GO term analyses results presented in sheets 2 and 3 of Suppl. data 7 were added afterwards. Specifically the web interface of the ClusterProfiler tool was used to extarct a list of enriched nd depleted GO terms of the APA regulator set (n= 836 genes) over all tested essential genes in this screen (n= 2,057 genes).
+
+
+---
+
+# Runtime Details
+## Session Info
+<details>
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+</details>
+
+## Conda Environment
+<details>
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```
+</details>
+
+

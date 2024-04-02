@@ -1,0 +1,781 @@
+---
+title: "Fansler et al., Nature Communications, Suppl. Data preparation for parts of Fig. 5 and Suppl. Figure 8, generating Supplementary Data 9"
+output: html_notebook
+---
+
+Loading of R packages (not all may be required for this code section).
+
+In the second part of the analysis we correlated a number of gene features with the isoform expression changes (average dWUI) observed in each cluster. This section prepares theses data and generates the figures shown in the paper.
+
+
+```{r message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(broom)
+library(Biostrings)
+library(ggpubr)
+library(rtracklayer)
+library(org.Hs.eg.db)
+library(RColorBrewer)
+library(biomaRt)
+library(GenomicFeatures)
+library(BSgenome)
+library(GeneOverlap)
+library(pheatmap)
+library(biomaRt)
+library(plyranges)
+library(ggrepel)
+library(writexl)
+library(gridExtra)
+library(readxl)
+
+
+### This is a custom package developed by MM Fansler
+
+#install.packages("remotes")
+#remotes::install_github("mfansler/codonopt")
+
+library(codonopt)
+
+```
+
+
+Loading of data files used in the analysis.
+
+```{r}
+
+set.seed(20240323)
+
+### File with info about perturbation cluster
+
+names <- read.csv("names_perturbation_cluster.csv") %>% 
+  mutate(cluster_id_target = as.factor(cluster_id_target))
+
+### File summarizing multi-UTR gene isoforms detected in K562 experiment
+
+anno_ess <- read.csv("df_utrs_kd6_essential_ui10.csv")
+
+### Splicing data from Drexler Choquet and Sterling, Mol Cell 2020
+
+url <- "https://ars.els-cdn.com/content/image/1-s2.0-S1097276519308652-mmc3.xlsx"
+
+temp <- tempfile()
+
+download.file(url, temp)
+
+splice <- read_excel(temp)
+
+unlink(temp)
+
+### Stop codon read-through rate from Cridge et al, NAR 2018: Suppl Table 1
+
+url <- "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5829715/bin/gkx1315_supp.zip"
+
+temp <- tempfile()
+
+download.file(url, temp)
+exdir = tempdir()
+unzip(temp, exdir= tempdir())
+
+stop_codon1 <- read_xlsx(paste0(exdir,"/","nar-02889-a-2017-File011.xlsx"), range = "A1:C65") 
+stop_codon2 <- read_xlsx(paste0(exdir,"/","nar-02889-a-2017-File011.xlsx"), range = "E1:G65") 
+stop_codon3 <- read_xlsx(paste0(exdir,"/","nar-02889-a-2017-File011.xlsx"), range = "I1:K65") 
+
+unlink(temp)  
+
+stop_codon <-   rbind(stop_codon1,stop_codon2, stop_codon3) %>%
+  mutate(Sequence= gsub("U", "T", Sequence)) %>%
+  dplyr::rename("Stop_site"= Sequence)
+
+
+### Predicted Cleavage probability, calculated by APARENT version 2, part of Suppl Data 1
+
+aparent <- read_csv("MWS_data/Human_MWS_CS_Annotation.csv")
+
+### m6A methylation data from Xiao et al, Narure Biotechnology 2023
+
+url <- "https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE211303&format=file&file=GSE211303%5Fhela%2Epolya%2Ewt%2Eftom%2Eivt%2Erep1%2Edeep%2Ehits%2Etxt%2Egz"
+
+temp <- tempfile()
+
+download.file(url, temp)
+
+meth <- read.delim(temp)
+
+unlink(temp)
+
+meth_1 <- as.data.frame(str_split_fixed(meth$pos , "_", n=3))
+
+colnames(meth_1) <- c("seqnames", "start", "strand")
+
+meth <- cbind(meth, meth_1)
+
+## Loading transcript-specifc mRNA half-life data, calculated with the SLAM-DUNK pipeline using the MWS UTRome by MMF
+
+slam <- read.csv("df_k562_slam_rates.csv") %>% 
+  rename("tx_id" = "transcript_id")
+
+```
+
+First, we collected features related to the mRNA sequences. For this purpose, we used the 3' CS in the MWS annotation that are found in the K562 data set to estimate 3'UTR lengths. We  also extracted the lengths of 5'UTR and CDS from the mRNA transcript with the longest open reading frame of each gene (GENCODE v39). 
+
+```{r}
+
+### Extract 3'UTRs from all GENCODE transcripts present in the K562 data set.
+
+gencode <- makeTxDbFromGFF("annotation/gencode.v39.mRNA_ends_found.gff3.gz",
+                format="gff")
+
+
+anno_ess1 <- anno_ess %>% 
+  mutate(transcript_id_utrome = transcript_id,
+         transcript_id = str_split_i(transcript_id_utrome, "-UTR", 1),
+         adjusted_length = str_split_i(transcript_id_utrome, "-UTR", 2)) %>%
+  dplyr::rename(end_3utr = end)
+
+utr3 <- threeUTRsByTranscript(gencode, use.names=TRUE)
+transcripts <- transcripts(gencode, use.names=TRUE)
+
+
+## extract start position in a strand-specific manner by setting the width to 1
+
+start_3utr <- as.data.frame(start(resize(utr3, width=1))) %>% 
+  dplyr::rename(transcript_id=group_name, start = value) %>% 
+  dplyr::select(transcript_id, start) %>% 
+  dplyr::rename(start_3utr=start)
+
+K562.transcripts_df <-  as.data.frame(subset(transcripts(gencode, 
+                                                         columns=c("tx_id", "tx_name", "gene_id")), tx_name %in% anno_ess1$transcript_id)) %>% 
+  dplyr::rename(transcript_id = tx_name) %>%
+  mutate(gene_id = as.character(gene_id))
+
+lengths <-  subset(transcriptLengths(gencode, 
+                                     with.cds_len=TRUE, 
+                                     with.utr5_len=TRUE, 
+                                     with.utr3_len=TRUE), 
+                   tx_name %in% anno_ess1$transcript_id) %>% 
+  dplyr::select(-1) %>% 
+  dplyr::rename(transcript_id = tx_name)
+
+anno_ess2 <- left_join(anno_ess1, K562.transcripts_df[,c(4,7,8)], by=c("gene_id","transcript_id")) %>%
+              left_join(., lengths, by=c("gene_id","transcript_id")) %>%
+              left_join(., start_3utr, by="transcript_id", multiple="first") %>%
+              mutate(adjusted_length= coalesce(as.numeric(adjusted_length), 0), 
+              tx_len= tx_len + adjusted_length, 
+              width = width + adjusted_length,
+              utr3_len= utr3_len + adjusted_length,
+              start_3utr = if_else(utr3_len==0, end_3utr, start_3utr))
+
+```
+
+```{r}
+              
+### For transcripts with missing values, we inferred with data from other transcripts of the same gene and then calculated the 3'UTR lengths. All transcripts that still had missing information were discarded (affected 80 transcripts).                         
+                                                        
+anno_ess3 <- anno_ess2 %>% 
+  group_by(gene_name) %>%
+  fill(cds_len, .direction="updown") %>%
+  fill(utr5_len, .direction="updown") %>%
+  fill(start_3utr, .direction="updown") %>%
+  mutate(utr3_len = if_else(is.na(utr3_len), abs(start_3utr-end_3utr), utr3_len),
+tx_len = if_else(is.na(tx_len), utr5_len+cds_len+utr3_len, tx_len)) %>%
+ungroup() %>% filter(!is.na(end_3utr), !is.na(start_3utr), !is.na(strand),
+!((strand == "+") & ((end_3utr - start_3utr) < 0)),
+!((strand == "-") & ((end_3utr - start_3utr) > 0)) ) %>% 
+ arrange(strand)
+
+## Two GRanges objects for 3'UTR on plus and minus strands were created. These were merged again and used to obtain the 3'UTR sequences (hg38).
+
+UTRs_3_plus <- anno_ess3 %>% 
+  dplyr::filter(strand =="+") %>%
+  makeGRangesFromDataFrame(keep.extra.columns=TRUE,
+                                        ignore.strand=FALSE,
+                                        seqinfo=NULL,
+                                        seqnames.field="seqnames",
+                                        start.field="start_3utr",
+                                        end.field="end_3utr",
+                                        strand.field="strand",
+                                        starts.in.df.are.0based=FALSE)
+
+UTRs_3_minus <- anno_ess3 %>% 
+  dplyr::filter(strand =="-") %>%
+  makeGRangesFromDataFrame(keep.extra.columns=TRUE,
+                                        ignore.strand=FALSE,
+                                        seqinfo=NULL,
+                                        seqnames.field="seqnames",
+                                        start.field="end_3utr",
+                                        end.field="start_3utr",
+                                        strand.field="strand",
+                                        starts.in.df.are.0based=FALSE)
+
+UTRs_3 <- c(UTRs_3_plus,UTRs_3_minus)
+
+Human_Genome <- getBSgenome("BSgenome.Hsapiens.UCSC.hg38")
+
+seq_3utr <-getSeq(Human_Genome, UTRs_3)
+
+## We evaluated AU-rich elements (absolute counts of ATTTA in 3'UTR) and GC-content (fraction of letters in 3'UTR, between 0 and 1).
+
+ARE <- DNAString("ATTTA")
+
+anno_ess3 <- anno_ess3 %>%
+  mutate(ARE_count = vcountPattern(ARE, seq_3utr),
+         GC_content = letterFrequency(seq_3utr, letters="GC", as.prob = T))
+```
+
+For inferring translational readthrough, we extracted the three start nucleotides of the 3'UTR together with the stop codon to compare it to experimental data from Cridge et al., NAR 2018. We also analyzed codon optimality using data from K562 cells published by WU et al elife 2019. 
+
+```{r}
+
+start_3UTR <- padAndClip(seq_3utr, IRanges(start=1, end=3), Rpadding.letter="N",  Lpadding.letter="N")
+
+anno_ess3 <- anno_ess3 %>%
+  mutate(start_3UTR_nuc = as.character(start_3UTR))
+
+###, Next, we extracted the coding regions of all transcripts (in four chunks) and analyzed their sequence
+
+#ensembl = useEnsembl(biomart="genes", dataset="hsapiens_gene_ensembl", mirror="useast")
+ensembl = useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl")
+
+
+CDS_seq1 <- getSequence(id= anno_ess3$transcript_id[1:3000], 
+                       type= "ensembl_transcript_id_version", 
+                       seqType = "coding" , 
+                       mart = ensembl)
+
+CDS_seq2 <- getSequence(id= anno_ess3$transcript_id[3001:6000], 
+                       type= "ensembl_transcript_id_version", 
+                       seqType = "coding" , 
+                       mart = ensembl)
+
+CDS_seq3 <- getSequence(id= anno_ess3$transcript_id[6001:9000], 
+                       type= "ensembl_transcript_id_version", 
+                       seqType = "coding" , 
+                       mart = ensembl)
+
+CDS_seq4 <- getSequence(id= anno_ess3$transcript_id[9001:length(anno_ess3$transcript_id)], 
+                       type= "ensembl_transcript_id_version", 
+                       seqType = "coding" , 
+                       mart = ensembl)
+
+CDS_seq <- rbind(CDS_seq1, CDS_seq2, CDS_seq3, CDS_seq4)
+
+CDS_analysis <- CDS_seq %>% 
+  dplyr::filter(!grepl('N', coding), !grepl('e', coding)) %>%
+  mutate(coding1 = sapply(coding, codonopt::as_codons), 
+         opt_perc = sapply(coding1, score_fraction_optimal),
+         Stop = substr(coding, nchar(.$coding) - 3 + 1, nchar(coding)),
+         GC_content_coding = letterFrequency(DNAStringSet(coding), letters = "GC", as.prob = TRUE)) %>%
+  dplyr::rename("transcript_id" = ensembl_transcript_id_version) %>%
+  dplyr::select(-(coding1))
+
+anno_ess4 <- left_join(anno_ess3,  CDS_analysis, by = "transcript_id", multiple="first") %>% 
+  distinct()
+
+```
+
+m6A methylation analysis based on data from Xiao et al Nat Biotechn. 2023 (HeLa dataset).
+
+```{r}
+
+gr_meth <- GRanges(
+    seqnames = meth$seqnames,
+    ranges = IRanges(start= as.numeric(meth$start), width=1L),
+    strand = meth$strand,
+    methylation = meth$methylation,
+    motif = meth$motif,
+    motif_type = meth$motif_type)
+
+anno_ess4_SU <- anno_ess4 %>% filter(utr_wt==0)
+anno_ess4_LU <- anno_ess4 %>% filter(utr_wt==1)
+
+end_UTR_SU <- GRanges(
+    seqnames = anno_ess4_SU$seqnames,
+    ranges = IRanges(start= as.numeric(anno_ess4_SU$end_3utr, width=0)),
+    strand = anno_ess4_SU$strand)
+end_UTR_LU <- GRanges(
+    seqnames = anno_ess4_LU$seqnames,
+    ranges = IRanges(start= as.numeric(anno_ess4_LU$end_3utr, width=0)),
+    strand = anno_ess4_LU$strand)
+
+trans <- anno_ess4 %>% 
+  group_by(gene_name) %>% 
+  summarize(trans = transcript_id[which.max(cds_len)]) %>% 
+  pull(trans) %>% 
+  unlist()
+
+tx <- transcripts(gencode, filter = list(tx_name = trans))
+
+gr_cds <- cdsBy(gencode, by="tx", use.names=TRUE)
+gr_cds <- gr_cds[names(gr_cds) %in% trans]
+
+cds_ranges_0 <- unlist(gr_cds)
+
+cds_ranges <- unlist(range(gr_cds))
+stop_codon_gr <- resize(cds_ranges, 0, fix="end")
+
+cds_ranges$transcript_id <- names(cds_ranges)
+
+cds_ranges_1 <- as.data.frame(cds_ranges)
+
+cds_ranges_2 <- GRanges(seqnames= cds_ranges_1$seqnames,
+                   ranges= IRanges(start= as.numeric(cds_ranges_1$start), 
+                                   end= as.numeric(cds_ranges_1$end)),
+                   strand= cds_ranges_1$strand,
+                   transcript_id= cds_ranges_1$transcript_id)
+
+
+meth_score_UTR <- as.data.frame(join_overlap_left(UTRs_3, gr_meth)) %>% 
+  group_by( gene_id , as.factor(utr_wt)) %>%
+  summarize(meth_score_UTR =sum(methylation/100),
+            meth_UTR = sum(!is.na(methylation))) %>% 
+  dplyr::rename("utr_wt" = `as.factor(utr_wt)`) %>%
+  mutate(meth_score_UTR=replace_na(meth_score_UTR,0))
+
+meth_score_CDS <- as.data.frame(join_overlap_left(cds_ranges_2, gr_meth)) %>% 
+  group_by(transcript_id) %>%
+  summarize(meth_score_CDS =sum(methylation/100),
+            meth_CDS = sum(!is.na(methylation))) %>% 
+  mutate(meth_score_CDS = replace_na(meth_score_CDS,0))
+
+anno_ess5 <- anno_ess4 %>%  
+  mutate(utr_wt= as.factor(utr_wt)) %>% 
+  left_join(meth_score_UTR, by=c("gene_id", "utr_wt")) %>%  
+  left_join(meth_score_CDS, by=c("transcript_id"))
+
+```
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+
+### this data file comprises the gene expression counts and WUI and pct_ipa values for all sgRNA and gene pair conditions
+
+df_WUIess <-readRDS("df_wui_kd6_essential_ui10.Rds")
+
+### This file provides the cluster identity for a subset of the perturbations (836 genes) which will be used to summarize the data on the cluster level, the clsuter_ids provided in this file do not match the final cluster numbers presented in the paper
+
+target_clus <- read.csv("df_target_nnclusters_kd6_essential_ui10.csv") %>% mutate(cluster_id_target= as.factor(cluster_id))
+
+nontarg_ess <- df_WUIess %>% 
+  filter(target_gene=="non-targeting") %>% 
+  group_by(gene_name, gene_id) %>%
+  summarize(mean_tpm = mean(tpm, na.rm=TRUE),
+            sd_tpm = sd(tpm, na.rm=TRUE),
+            mean_wui = mean(wui, na.rm=TRUE),
+            sd_wui= sd(wui, na.rm=TRUE), 
+            mean_ipa = mean(pct_ipa, na.rm=TRUE),
+            sd_ipa= sd(pct_ipa, na.rm=TRUE)) %>%
+  mutate(mean_wui = if_else(mean_tpm>= 5, mean_wui, NA),
+         mean_ipa = if_else(mean_tpm>= 5 & mean_ipa>=0.1 & mean_ipa<= 0.9 , mean_ipa, NA),
+         sd_wui= if_else(mean_tpm>= 5,sd_wui, NA),
+         sd_ipa= if_else(mean_tpm>= 5 & mean_ipa>=0.1 & mean_ipa<= 0.9 ,sd_ipa, NA))
+
+            
+df_WUIess1 <- left_join(df_WUIess, 
+                        nontarg_ess, by=c("gene_id", "gene_name"), 
+                        multiple="all") %>%
+              mutate(dwui = wui-mean_wui, 
+                     dipa = pct_ipa-mean_ipa,
+                     fc_tpm = log2(tpm/mean_tpm))
+
+### Cluster labels are added to the data frame and used to calculate mean dwui values for each gene and cluster
+
+df_WUI_ess_clus <- left_join(df_WUIess1, target_clus, by=c("target_gene", "target_gene_id", "sgID_AB"))
+
+df_WUI_ess_clus_sum <-  df_WUI_ess_clus %>% 
+  dplyr::filter(!is.na(wui)) %>% 
+  group_by(gene_name, gene_id, cluster_id_target) %>% 
+  summarize(mean_dwui= mean(dwui, na.rm=T))
+
+```
+
+
+Integrate splicing-related features from Drexler et al 2019.
+
+```{r}
+
+## Prepare splicing data frame for merging with "pert_clus" data table.
+## 1. remove annotation after dot from Ensemble transcript IDs and match with REFSEQ id entries.
+## 2. Use Annotation DBI to search for corresponding transcript IDs in ENSEMBL database.
+
+splice$REFSEQ <- sub('\\.[0-9]*$', '', splice$gene)
+
+conversion <- AnnotationDbi::select(x= org.Hs.eg.db, 
+                     keys= splice$REFSEQ, 
+                     keytype =  "REFSEQ", 
+                     column= c("REFSEQ", "ENSEMBL"),
+                     multiVals= "first")
+
+conversion <- conversion[!duplicated(conversion$REFSEQ), ]
+
+splice <- left_join(splice, conversion, by="REFSEQ")
+
+splice1 <- splice %>% 
+  group_by(ENSEMBL) %>% 
+  summarize(max_intron_length = max(intron_length),
+            min_X5SS_score = min(`5SS_score`),
+            min_X3SS_score = min(`3SS_score`),
+            n_exon = max(intron_total+1))
+
+pert_clus <- df_WUI_ess_clus %>%
+  dplyr::group_by(gene_name, gene_id, cluster_id_target) %>% 
+  summarize(wui= mean(wui, na.rm=TRUE), 
+            tpm = mean(tpm, na.rm=TRUE),
+            ipa = mean(pct_ipa, na.rm=TRUE)) %>%
+  left_join(nontarg_ess, by=c("gene_name","gene_id")) %>%
+  filter(mean_tpm >5, !is.na(mean_wui), !is.na(cluster_id_target)) %>%
+  mutate(dwui = wui-mean_wui, 
+         fc_tpm= log2(tpm/mean_tpm))
+
+pert_clus$ENSEMBL <- sub('\\.[0-9]*$', '', pert_clus$gene_id)
+
+pert_clus_splice <-left_join(pert_clus, splice1, by="ENSEMBL")
+
+```
+
+Calculate a set of correlations related to splicing features.
+
+```{r}
+
+mean_tpm_cor <- pert_clus_splice %>% 
+  filter(!is.na(mean_tpm)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation = tidy(cor.test(dwui,log2(mean_tpm), method = "pearson"))) %>%
+  mutate (feature= "Expression level", FDR= p.adjust(correlation$p.value, method="fdr"))
+
+n_exons_cor <- pert_clus_splice %>% 
+  filter(!is.na(n_exon)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test((n_exon), dwui, method = "pearson"))) %>%
+  mutate (feature= "Number of exons", FDR= p.adjust(correlation$p.value, method="fdr"))
+
+X5SS_score_min_cor <- pert_clus_splice %>% 
+  filter(!is.na(min_X5SS_score)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test(min_X5SS_score, dwui, method = "pearson"))) %>%
+  mutate (feature= "Lowest 5'SS score", FDR= p.adjust(correlation$p.value, method="fdr"))
+
+X3SS_score_min_cor <- pert_clus_splice %>% 
+  filter(!is.na(min_X3SS_score)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test(min_X3SS_score, dwui, method = "pearson"))) %>%
+  mutate (feature= "Lowest 3'SS score", FDR= p.adjust(correlation$p.value, method="fdr"))
+
+max_intron_length_cor <- pert_clus_splice %>% 
+  filter(!is.na(max_intron_length)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test(log10(max_intron_length), dwui, method = "pearson"))) %>%
+  mutate (feature= "Maximum intron length", FDR= p.adjust(correlation$p.value, method="fdr")) 
+
+features_splicing <- bind_rows(
+    mean_tpm_cor,
+    n_exons_cor,
+    X3SS_score_min_cor,
+    X5SS_score_min_cor,
+    max_intron_length_cor)
+
+```
+
+Now, the other sequence-specific information are consolidated on the gene level.
+
+```{r}
+
+anno_ess5_genes <- anno_ess5 %>% 
+  group_by(gene_name, gene_id) %>% 
+  reframe(
+      LU_length= utr3_len[utr_wt==1], 
+      SU_length= utr3_len[utr_wt==0],
+      LUext_length= LU_length-SU_length,
+      width = max(width), 
+      max_dist= LU_length-SU_length,
+      nexon = max(nexon),
+      utr5_len = max(utr5_len),
+      LU_tx_len = tx_len[utr_wt==1], 
+      SU_tx_len = tx_len[utr_wt==0],
+      LUext_tx_len = LU_tx_len - SU_tx_len,
+      Stop_site = paste(Stop[which.max(cds_len)],start_3UTR_nuc[which.max(cds_len)]),
+      non_opt_perc = 1- opt_perc[which.max(cds_len)],
+      GC_content_coding = GC_content_coding[which.max(cds_len)],
+      cds_len = max(cds_len), 
+      ARE_SU = ARE_count[utr_wt==0], 
+      ARE_LU = ARE_count[utr_wt==1],
+      ARE_LUext = ARE_LU - ARE_SU, 
+      GC_SU = GC_content[utr_wt==0], 
+      GC_LU = GC_content[utr_wt==1],
+      GC_LUext = ((GC_LU * LU_tx_len) - (GC_SU * SU_tx_len))/LUext_tx_len,
+      meth_SU_UTR_score = meth_score_UTR[utr_wt==0], 
+      meth_LU_UTR_score = meth_score_UTR[utr_wt==1], 
+      meth_score_CDS = meth_score_CDS[which.max(cds_len)],
+      meth_score_total = meth_score_CDS+meth_LU_UTR_score,
+      meth_non_UTR = meth_CDS[which.max(cds_len)],
+      meth_SU_UTR = meth_UTR[utr_wt==0], 
+      meth_LU_UTR = meth_UTR[utr_wt==1],
+      meth_total = meth_non_UTR+meth_LU_UTR) %>% 
+  left_join(stop_codon[-3], by ="Stop_site") %>% 
+  filter(max_dist>200)
+
+
+```
+
+Gene-specific alterations in UTR use in each cluster (average dWUI per cluster) are combined with the genes' feauture values
+
+```{r}
+
+pert_clus1 <- df_WUI_ess_clus %>%
+  dplyr::group_by(gene_name, gene_id, cluster_id_target) %>% 
+  summarize(wui= mean(wui, na.rm=TRUE), 
+            tpm = mean(tpm, na.rm=TRUE),
+            ipa = mean(pct_ipa, na.rm=TRUE))
+      
+pert_clus2 <- left_join(pert_clus1, nontarg_ess, by=c("gene_id", "gene_name")) %>%
+  filter(!is.na(cluster_id_target), !cluster_id_target=="control") %>%
+  filter(mean_tpm>5) %>%
+  mutate(dwui = wui-mean_wui,
+         fc_tpm= log2(tpm/mean_tpm))
+
+pert_clus3 <- left_join(pert_clus2, anno_ess5_genes, by = c("gene_name", "gene_id")) %>%
+  filter(!is.na(dwui))
+
+
+```
+
+Calculation of Pearson correlations for each feature with subsequent multiple test correction (FDR method). Correlation results are summarized in a new table.
+
+```{r}
+
+width_cor <- pert_clus3 %>% 
+  filter(!is.na(width)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test(log10(width), dwui, method = "pearson"))) %>%
+  mutate(feature= "Gene length", FDR= p.adjust(correlation$p.value, method="fdr"))
+
+Stop_site_cor <- pert_clus3 %>% 
+  filter(!is.na(`%RT`)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test(`%RT`, dwui, method = "pearson"))) %>%
+  mutate (feature= "Stop site quality score", FDR= p.adjust(correlation$p.value, method="fdr")) 
+
+ARE_LU_cor <- pert_clus3 %>% 
+  filter(!is.na(ARE_LU)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test(ARE_LU, dwui, method = "pearson"))) %>%
+  mutate (feature= "ARE count 3'UTR (LU)", FDR= p.adjust(correlation$p.value, method="fdr"))
+
+ARE_SU_cor <- pert_clus3 %>% 
+  filter(!is.na(ARE_SU)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test(ARE_SU, dwui, method = "pearson"))) %>%
+  mutate (feature= "ARE count 3'UTR (SU)", FDR= p.adjust(correlation$p.value, method="fdr"))
+
+GCUTR_LU_cor <- pert_clus3 %>% 
+  filter(!is.na(GC_LU)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test(GC_LU, dwui, method = "pearson"))) %>%
+  mutate (feature= "GC-content 3'UTR (LU)", FDR= p.adjust(correlation$p.value, method="fdr"))
+
+GCUTR_SU_cor <- pert_clus3 %>% 
+  filter(!is.na(GC_SU)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test(GC_SU, dwui, method = "pearson"))) %>%
+  mutate (feature= "GC-content 3'UTR (SU)", FDR= p.adjust(correlation$p.value, method="fdr"))
+
+UTR5_cor <- pert_clus3 %>% 
+  filter(!is.na(utr5_len), utr5_len>0) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test(log10(utr5_len), dwui, method = "pearson"))) %>%
+  mutate (feature= "5`UTR length", FDR= p.adjust(correlation$p.value, method="fdr"))
+
+UTR_length_LU_cor <- pert_clus3 %>% 
+  filter(!is.na(LU_length), LU_length>0) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test(log10(LU_length), dwui, method = "pearson"))) %>%
+  mutate (feature= "3'UTR length (LU)", FDR= p.adjust(correlation$p.value, method="fdr"))
+  
+UTR_length_LUext_cor <- pert_clus3 %>% 
+  filter(!is.na(LUext_length)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test(log10(LUext_length), dwui, method = "pearson"))) %>%
+  mutate (feature= "Proximal-distal CS distance", FDR= p.adjust(correlation$p.value, method="fdr"))
+
+CDS_length_cor <- pert_clus3 %>% 
+  filter(!is.na(cds_len)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test(log10(cds_len), dwui, method = "pearson"))) %>%
+  mutate (feature= "CDS length", FDR= p.adjust(correlation$p.value, method="fdr"))
+
+Codonopt_cor <- pert_clus3 %>% filter(!is.na(non_opt_perc)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test((non_opt_perc), dwui, method = "pearson"))) %>%
+  mutate (feature= "% non-optimal codons", FDR= p.adjust(correlation$p.value, method="fdr"))
+  
+GC_cds_cor <- pert_clus3 %>% 
+  filter(!is.na(GC_content_coding)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test((GC_content_coding), dwui, method = "pearson"))) %>%
+  mutate (feature= "GC-content CDS", FDR= p.adjust(correlation$p.value, method="fdr"))
+  
+Meth_LU_score_UTR_cor <- pert_clus3 %>% 
+  filter(!is.na(meth_LU_UTR_score)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test((meth_LU_UTR_score), dwui, method = "pearson"))) %>%
+  mutate (feature= "m6A score of 3'UTR (LU)", FDR= p.adjust(correlation$p.value, method="fdr"))
+
+Meth_SU_score_UTR_cor <- pert_clus3 %>% 
+  filter(!is.na(meth_SU_UTR_score)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test((meth_SU_UTR_score), dwui, method = "pearson"))) %>%
+  mutate (feature= "m6A score of 3'UTR (SU)", FDR= p.adjust(correlation$p.value, method="fdr"))
+  
+Meth_CDS_score_cor <- pert_clus3 %>% 
+  filter(!is.na(meth_score_CDS)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test((meth_score_CDS), dwui, method = "pearson"))) %>%
+  mutate (feature= "m6A score of CDS", FDR= p.adjust(correlation$p.value, method="fdr"))
+
+
+features <- bind_rows(features_splicing,
+                      width_cor,
+                     Stop_site_cor,
+                     ARE_LU_cor,
+                     ARE_SU_cor, 
+                     GCUTR_LU_cor, 
+                     GCUTR_SU_cor,
+                     GC_cds_cor,
+                     UTR5_cor, 
+                     UTR_length_LU_cor, 
+                     UTR_length_LUext_cor, 
+                     CDS_length_cor,
+                     Codonopt_cor,
+                     Meth_LU_score_UTR_cor,
+                     Meth_SU_score_UTR_cor,
+                     Meth_CDS_score_cor)
+                     
+```
+
+Analysis of the PAS sequence quality using the APARENT2 prediction tool on the 205 nucleotide sequences surrounding the cleavage sites (centered). 
+
+```{r}
+
+anno_aparent <- left_join(anno_ess, aparent[,c(4,18)], by="transcript_id") %>%
+  mutate("logit_cut" = qlogis(aparent2_full))
+
+## As a quality control this plot demonstrates the different predicted cleavage probabilities of proximal, intermediate and distal CS (not shown in the manuscript).
+
+anno_aparent %>% 
+  mutate(Group= case_when(utr_wt==0 ~ "Short",
+                          utr_wt>0 & utr_wt<1 ~ "Intermediate",
+                          utr_wt==1 ~"Long")) %>%
+  ggplot(aes(x=reorder(Group, logit_cut, mean), y=logit_cut, col=Group))+ 
+  geom_violin()+
+  geom_boxplot(width=0.2)+
+  scale_x_discrete("3'UTR transcript")+
+  scale_colour_discrete(guide = "none")+
+  ylab("APARENT2 score")+
+  theme_bw()
+
+anno_aparent1 <- anno_aparent[,-c(6,7,9:12)] %>% 
+  filter(utr_wt %in% c(0,1)) %>%
+  pivot_wider(id_cols=c("gene_name", "gene_id", "ensembl_id"), names_from= utr_wt, values_from=c("logit_cut")) %>%
+  mutate(cut_diff = `1`-`0`)
+
+pert_clus_aparent <- left_join(pert_clus2, anno_aparent1, by= c("gene_name","gene_id"))
+
+aparent_SU <- pert_clus_aparent %>% filter(!is.na(dwui), mean_tpm>5, !cluster_id_target=="control") %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test(`0`, dwui, method = "pearson"))) %>%
+  mutate(feature= "Proximal PAS quality", FDR= p.adjust(correlation$p.value, method="fdr"))
+
+aparent_LU <- pert_clus_aparent %>% filter(!is.na(dwui), mean_tpm>5, !cluster_id_target=="control") %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test(`1`, dwui, method = "pearson"))) %>%
+  mutate(feature= "Distal PAS quality", FDR= p.adjust(correlation$p.value, method="fdr"))
+
+features<- bind_rows(features,
+                     aparent_LU,
+                     aparent_SU)
+                     
+```
+
+Here, we are incorporating isoform-specific decay rates in our feature analysis. We are loading the data frame and performing some controls to check for data quality. We find that longer isoforms have a lower mean half life than short and intermediate ines. Then we calculate a ratio of longest to shortest to evaluate the relative difference between them. Overall, the decay rates of short and long isoforms within a gene are highly correlated.
+
+```{r}
+
+anno_slam <- 
+  left_join(anno_ess, slam, by="transcript_id") %>% 
+  dplyr::filter(utr_wt %in% c(0,1), half_life>0, half_life<1440) %>%
+  pivot_wider(id_cols=c("gene_name", "gene_id", "ensembl_id"), names_from= utr_wt, values_from=c(12:18))
+
+
+```
+
+
+```{r}
+
+pert_clus_slam <- left_join(pert_clus2, anno_slam[,-c(4:5,8:17)], by= c("gene_name","gene_id"))
+
+
+halflife_LU <- pert_clus_slam %>% filter(!is.na(half_life_1), !is.na(dwui)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test(log2(half_life_1), dwui, method = "pearson"))) %>%
+  mutate (feature= "mRNA half-life of long 3'UTR isoform", FDR= p.adjust(correlation$p.value, method="fdr"))
+
+halflife_SU <- pert_clus_slam %>% 
+  dplyr::filter(!is.na(half_life_0), !is.na(dwui)) %>%
+  group_by(cluster_id_target) %>% 
+  summarize(correlation =tidy(cor.test(log2(half_life_0), dwui, method = "pearson"))) %>%
+  mutate (feature= "mRNA half-life of short 3'UTR isoform", FDR= p.adjust(correlation$p.value, method="fdr"))
+
+
+features<- bind_rows(features, 
+                     halflife_LU,
+                     halflife_SU)
+
+features1 <- as_tibble(features$correlation)
+
+features2 <- names %>%
+  left_join(cbind(features[,c(1,3)], features1, features[,4]), by="cluster_id_target") %>%
+  dplyr::select(-cluster_id_target, -n_targets) %>%
+  dplyr::rename(Cluster_ID = order_heatm_new,
+                Clsuter_name = clus_name)
+
+features3 <- features2 %>%
+  dplyr::filter(feature %in% c(
+    "mRNA half-life of short 3'UTR isoform",
+    "mRNA half-life of long 3'UTR isoform", 
+    "Distal PAS quality", 
+    "Proximal PAS quality",  
+    "m6A score of 3'UTR (SU)",  
+    "m6A score of 3'UTR (LU)", 
+    "m6A score of CDS",   
+    "Lowest 3'SS score",
+    "Lowest 5'SS score", 
+    "Number of exons",              
+    "Maximum intron length", 
+    "ARE count 3'UTR (LU)", 
+    "ARE count 3'UTR (SU)" ,
+    "GC-content 3'UTR (SU)", 
+    "GC-content 3'UTR (LU)", 
+    "GC-content CDS", 
+    "5`UTR length",
+    "Stop site quality score",
+    "Proximal-distal CS distance",
+    "3'UTR length (LU)",
+    "CDS length",
+    "% non-optimal codons",
+    "Gene length",
+    "Expression level")
+    ) %>%
+    mutate(
+  Result = case_when(FDR>0.05 ~ "Unaffected",
+            FDR<0.05 & sign(estimate)== 1 ~ "Promotes Lengthening",
+            FDR<0.05 & sign(estimate)== -1 ~ "Promotes Shortening"),
+  Result = factor(Result, levels=c("Promotes Lengthening", "Unaffected", "Promotes Shortening")))
+  
+
+# Writing file containing all data (Supplementary Data 9)
+
+write_xlsx(features3, "table_outputs/Suppl_Data9.xlsx")
+
+```
+
+
+

@@ -1,0 +1,110 @@
+---
+title: "Fansler et al., Nature Communications, Suppl. Data 8"
+author: "Sibylle Mitschka"
+output: 
+  html_document: 
+    code_folding: show
+    df_print: paged
+---
+
+## Loading of R packages 
+(not all may be required for this code section)
+
+
+```{r message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(broom)
+library(Biostrings)
+library(ggpubr)
+library(rtracklayer)
+library(org.Hs.eg.db)
+library(RColorBrewer)
+library(biomaRt)
+library(GenomicFeatures)
+library(BSgenome)
+library(GeneOverlap)
+library(pheatmap)
+library(biomaRt)
+library(plyranges)
+library(ggrepel)
+library(writexl)
+library(gridExtra)
+library(readxl)
+
+```
+
+## Creating supplementary table 8
+
+```{r}
+### This file provides the names for the clusters and the conversion of the primary cluster id to the final cluster id used in the paper.
+
+names <- read.csv("input_data/names_perturbation_cluster.csv") %>% 
+  mutate(cluster_id_target = as.factor(cluster_id_target))
+
+### loading of DUL test summary table and merging with table
+
+anno_ess <- read.csv("input_data/df_utrs_kd6_essential_ui10.csv")
+
+DUL_test <- read_delim("input_data/df_dwui_kd6_clusters.mw_test.tsv.gz") %>% 
+  mutate(cluster_id_target= as.factor(cluster_id), 
+  DUL = as.factor(case_when(p.adj < 0.05 & dwui < 0 ~ "Shortening", 
+                            p.adj < 0.05 & dwui > 0 ~ "Lengthening",
+                            .default= "No change"))) %>%
+  dplyr::select(-cluster_id) %>%
+  left_join(names, by= "cluster_id_target") %>%
+  dplyr::rename(cluster_id= order_heatm_new, cluster_name= clus_name) %>%
+  dplyr::select(gene_id, gene_name, cluster_id, cluster_name, DUL, mean_tpm_ntp, sd_tpm_ntp, mean_tpm_cluster, sd_tpm_cluster, mean_wui_ntp, sd_wui_ntp, mean_wui_cluster, sd_wui_cluster, dwui, l2fc, statistic, p.value, p.adj) %>%
+  arrange(cluster_id)
+
+### loading of DGE test summary table and merging with table
+
+DGE_test <- read_tsv("input_data/df_dge_kd6_clusters.tsv.gz") %>%      
+  dplyr::rename(cluster_id_target = cluster_id ) %>%
+   mutate(DGE = case_when(p.adj < 0.05 & l2fc < -log2(1.5) ~ "Downregulated", 
+                          p.adj < 0.05 & l2fc > log2(1.5) ~ "Upregulated",
+                          .default= "No change"),
+          cluster_id_target= as.factor(cluster_id_target)) %>%
+  left_join(names, by= "cluster_id_target") %>%
+  dplyr::rename(cluster_id= order_heatm_new, cluster_name= clus_name) %>%
+  dplyr::select(gene_id, gene_name, cluster_id, cluster_name, DGE, mean_tpm_ntp, 
+                sd_tpm_ntp, mean_tpm_cluster, sd_tpm_cluster, l2fc, statistic, p.value, p.adj) %>%
+  arrange(cluster_id)
+
+### loading of DGE test summary table and merging with table
+
+write_xlsx(list(Transcripts = anno_ess,
+                DGE_genes = DGE_test,
+                DUL_genes = DUL_test),
+           path= "Table_outputs/Suppl_Data8.xlsx")
+
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+<details>
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+</details>
+
+## Conda Environment
+<details>
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```
+</details>
+
+
