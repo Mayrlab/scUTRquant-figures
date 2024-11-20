@@ -1,0 +1,190 @@
+---
+title: "Fansler et al., Nature Communications, Figure 3"
+author: "Sibylle Mitschka"
+output: 
+  html_document: 
+    code_folding: show
+    df_print: paged
+---
+
+Loading of R packages (not all may be required for this code section).
+
+```{r message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(broom)
+library(Biostrings)
+library(ggpubr)
+library(rtracklayer)
+library(org.Hs.eg.db)
+library(RColorBrewer)
+library(biomaRt)
+library(GenomicFeatures)
+library(BSgenome)
+library(GeneOverlap)
+library(pheatmap)
+library(biomaRt)
+library(plyranges)
+library(ggrepel)
+library(writexl)
+library(gridExtra)
+library(readxl)
+
+```
+
+Next, we are investigating to what extent genes can change the dominantly expressed isoforms across all tissues. We are considering an isoform change occurring when at least one of the tissues with more than 200 cells has a different dominantly expressed isoform (the isoform with the absolute highest TPM). In order to be considered, a gene needs to have a total expression level exceeding 5 TPM (not including IPA isoform expression). Genes with any number of 3'UTR isoforms are considered (2 or more) and isoforms can originate from merged cleavage sites.
+
+```{r}
+### Deduce the effective number of cell number from the number of cells that the highest expressed genes are detected in.
+
+n_cells_tissue_hs <- read_delim("input_data/tpm_celltypes/hg38/merged_ncells_expr.tsv") %>%
+  pivot_longer(cols=c(8:410), names_to="Tissue", values_to = "cells") %>%
+  group_by(Tissue) %>%
+  slice_max(cells, with_ties=FALSE, n=1) %>%
+  ungroup() %>%
+  select(Tissue, cells) 
+
+### This creates the list of cell types that we want to analyze (234 cell types).
+
+Tissues_high_hs <- n_cells_tissue_hs %>%
+  dplyr::filter(cells>199) %>%
+  pull(Tissue) %>%
+  unlist()
+
+## Filter to multi-UTR genes with more than 5TPM (excluidng IPA).
+## Determine the highest expressed isoform for each gene and tissue.
+
+
+atlas_human_filt <- read_delim("input_data/tpm_celltypes/hg38/merged_tx_tpm_pointestimates.tsv.gz") %>%
+   pivot_longer(cols=c(21:423), names_to="Tissue", values_to = "TPM") %>%
+   dplyr::filter(Tissue %in% Tissues_high_hs)
+
+
+atlas_human_gene_TPMs_filt <- atlas_human_filt %>%
+  group_by(gene_name, gene_id, Tissue) %>%
+  summarize(TPM_gene = sum(TPM, na.rm=T),
+            TPM_gene_woIPA = sum(TPM[is_ipa==FALSE], na.rm=T))
+
+atlas_human_filt1 <- atlas_human_filt %>%
+  left_join(., atlas_human_gene_TPMs_filt, by=c("gene_name", "gene_id", "Tissue")) %>%
+  mutate(frac_tx_to_gene= TPM/TPM_gene,
+         frac_tx_to_gene_woIPA = TPM/TPM_gene_woIPA)
+
+atlas_human3 <- atlas_human_filt1 %>%
+  ungroup() %>%
+  dplyr::filter(is_ipa==FALSE, atlas.utr_type=="multi", TPM_gene_woIPA > 5) %>%
+  dplyr::select(Tissue, gene_name, gene_id, transcript_id, frac_tx_to_gene_woIPA, TPM_gene_woIPA) %>%
+  group_by(Tissue, gene_name, gene_id, TPM_gene_woIPA) %>%
+  slice_max(frac_tx_to_gene_woIPA, n=1) %>%
+  ungroup()
+
+## Create a summary of occurances for each isoform in this lsit.
+## Count how many different dominant transcripts are occurring per gene and canlculate the fraction of total.
+
+human_atlas_table <- atlas_human3 %>%
+  group_by(transcript_id) %>% 
+  dplyr::count(gene_name) %>%
+  ungroup() %>%
+  dplyr::count(gene_name) %>%
+  dplyr::count(n) %>%
+  mutate(frac = nn/sum(nn)) %>% 
+  dplyr::rename(Genes=nn) %>%
+  mutate(organism= "human")
+
+## Repeat the last two operations for the mouse dataset
+
+### Deduce cell number from the number of cells the highest expressed genes are expressed in.
+
+n_cells_tissue_mm <- read_delim("input_data/tpm_celltypes/mm10/merged_ncells_expr.tsv") %>%
+  pivot_longer(cols=c(8:152), names_to="Tissue", values_to = "cells") %>%
+  group_by(Tissue) %>%
+  slice_max(cells, with_ties=FALSE, n=1) %>%
+  ungroup() %>%
+  select(Tissue, cells) 
+
+### This creates the list of cell types that we want to analyze (82 cell types).
+
+Tissues_high_mm <- n_cells_tissue_mm %>%
+  dplyr::filter(cells>199) %>%
+  pull(Tissue) %>%
+  unlist()
+
+atlas_mouse_filt <- read_delim("input_data/tpm_celltypes/mm10/merged_tx_tpm_pointestimates.tsv.gz") %>%
+   pivot_longer(cols=c(21:165), names_to="Tissue", values_to = "TPM") %>%
+   dplyr::filter(Tissue %in% Tissues_high_mm)
+
+atlas_mouse_gene_TPMs_filt <- atlas_mouse_filt %>%
+  group_by(gene_name, gene_id, Tissue) %>%
+  summarize(TPM_gene = sum(TPM, na.rm=T),
+            TPM_gene_woIPA = sum(TPM[is_ipa==FALSE], na.rm=T))
+
+atlas_mouse_filt1 <- atlas_mouse_filt %>%
+  left_join(., atlas_mouse_gene_TPMs_filt, by=c("gene_name", "gene_id", "Tissue")) %>%
+  mutate(frac_tx_to_gene= TPM/TPM_gene,
+         frac_tx_to_gene_woIPA = TPM/TPM_gene_woIPA) 
+
+
+atlas_mouse3 <- atlas_mouse_filt1 %>%
+  ungroup() %>%
+  dplyr::filter(is_ipa==FALSE, atlas.utr_type=="multi", TPM_gene_woIPA > 5) %>%
+  dplyr::select(Tissue, gene_name, gene_id, transcript_id, frac_tx_to_gene_woIPA) %>%
+  group_by(Tissue, gene_name, gene_id) %>%
+  slice_max(frac_tx_to_gene_woIPA, n=1)
+
+mouse_atlas_table <- atlas_mouse3 %>%
+  ungroup() %>%
+  group_by(transcript_id) %>% 
+  dplyr::count(gene_name) %>%
+  ungroup() %>%
+  dplyr::count(gene_name) %>%
+  dplyr::count(n) %>%
+  mutate(frac = nn/sum(nn)) %>% 
+  dplyr::rename(Genes=nn) %>%
+  mutate(organism= "mouse")
+
+### Now, we combine both result summaries and prepare a stacked bar plot.
+
+plot_switching <- rbind(mouse_atlas_table, human_atlas_table) %>%
+  group_by(organism, n>1) %>%
+  summarize(sum= sum(frac)) %>%
+  ggplot(aes(y = organism, x = sum, fill = `n > 1`))+
+  scale_x_continuous("Fraction of genes", expand=c(0,0))+
+  geom_col()+
+  scale_fill_manual(name= "Switching", values=c("grey","cadetblue"))+
+  theme_bw()
+
+plot_switching
+
+ggsave("Figure_outputs/Fig_3b.pdf", plot_switching)
+
+```
+
+
+
+---
+
+# Runtime Details
+## Session Info
+<details>
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+</details>
+
+## Conda Environment
+<details>
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```
+</details>
+
+

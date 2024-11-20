@@ -1,0 +1,187 @@
+---
+title: "Fansler et al., Nature Communications, Figure 4c"
+author: "Sibylle Mitschka"
+output: 
+  html_document: 
+    code_folding: show
+    df_print: paged
+---
+
+Loading of R packages (not all may be required for this code section). 
+
+
+```{r message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(broom)
+library(Biostrings)
+library(ggpubr)
+library(rtracklayer)
+library(org.Hs.eg.db)
+library(RColorBrewer)
+library(biomaRt)
+library(GenomicFeatures)
+library(BSgenome)
+library(GeneOverlap)
+library(pheatmap)
+library(biomaRt)
+library(plyranges)
+library(ggrepel)
+library(writexl)
+library(gridExtra)
+library(readxl)
+
+```
+
+wui values for the perturbations in each cluster were compared against non-targeting controls with a non-parametric test. In order to reduce the number of performed comparisons, we limited the tests to pairs where the gene had an average expression level of >=5 tpm in at least one of the compared groups. Similar test were performed for gene expression analysis for each cluster.
+
+For the APA analysis, we chose a significance threshold of 0.05 for adjusted p-values ("p.adj") and defined APA regulation as either "Shortening" or "lengthening" on the basis of negative or positive "dwui" values, respectively. Non-significant test results were labeled with "No change" for the purposes of downstream analysis.
+
+For the gene expression analysis, we chose a significance threshold of 0.05 for adjusted p-values ("p.adj") and and an effect size of |1.5| fold change. Non-significant test results were labeled with "No change" for the purposes of downstream analysis.
+
+
+
+```{r message=FALSE, warning=FALSE}
+
+
+### this data file comprises the gene expression counts and WUI and pct_ipa values for all sgRNA and gene pair conditions
+
+df_WUIess <-readRDS("input_data/df_wui_kd6_essential_ui10.Rds")
+
+### This file provides the cluster identity for a subset of the perturbations (836 genes) which will be used to summarize the data on the cluster level, the clsuter_ids provided in this file do not match the final cluster numbers presented in the paper
+
+target_clus <- read.csv("input_data/df_target_nnclusters_kd6_essential_ui10.csv") %>% mutate(cluster_id_target= as.factor(cluster_id))
+
+### This file provides the names for the clusters and the conversion of the primary cluster id to the final cluster id used in the paper.
+
+names <- read.csv("input_data/names_perturbation_cluster.csv") %>% 
+  mutate(cluster_id_target = as.factor(cluster_id_target))
+
+### This file provides additional data on the subset of mRNA 3'ends that have been detected in this K562 data set. They will be used to derive further features such as mRNA lengths from the data.
+
+anno_ess <- read.csv("input_data/df_utrs_kd6_essential_ui10.csv")
+
+```
+
+
+Boased on the non-targeting control sgRNA conditions in the data set (n=97 individual pairs) we first  calculated the baseline mean for all genes' WUI, IPA (named pct_ipa) and total expression values. 
+To reduce the noise in the data, mean_wui and mean_ipa were replaced with NA for genes with a mean_tpm <5. Similar to 3'UTR APA, a gene's IPA was only considered when it ranged between 10 and 90%.
+Next, these values were used to calculate the relative deviations in these metrics in the perturbed conditions, i.e. dwui, fc_tpm and dipa. 
+
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+
+nontarg_ess <- df_WUIess %>% 
+  filter(target_gene=="non-targeting") %>% 
+  group_by(gene_name, gene_id) %>%
+  summarize(mean_tpm = mean(tpm, na.rm=TRUE),
+            sd_tpm = sd(tpm, na.rm=TRUE),
+            mean_wui = mean(wui, na.rm=TRUE),
+            sd_wui= sd(wui, na.rm=TRUE), 
+            mean_ipa = mean(pct_ipa, na.rm=TRUE),
+            sd_ipa= sd(pct_ipa, na.rm=TRUE)) %>%
+  mutate(mean_wui = if_else(mean_tpm>= 5, mean_wui, NA),
+         mean_ipa = if_else(mean_tpm>= 5 & mean_ipa>=0.1 & mean_ipa<= 0.9 , mean_ipa, NA),
+         sd_wui= if_else(mean_tpm>= 5,sd_wui, NA),
+         sd_ipa= if_else(mean_tpm>= 5 & mean_ipa>=0.1 & mean_ipa<= 0.9 ,sd_ipa, NA))
+
+            
+df_WUIess1 <- left_join(df_WUIess, 
+                        nontarg_ess, by=c("gene_id", "gene_name"), 
+                        multiple="all") %>%
+              mutate(dwui = wui-mean_wui, 
+                     dipa = pct_ipa-mean_ipa,
+                     fc_tpm = log2(tpm/mean_tpm))
+
+```
+
+```{r message=FALSE, warning=FALSE}
+
+### Cluster labels are added to the data frame and used to calculate mean dwui values for each gene and cluster
+
+df_WUI_ess_clus <- left_join(df_WUIess1, target_clus, by=c("target_gene", "target_gene_id", "sgID_AB"))
+
+df_WUI_ess_clus_sum <-  df_WUI_ess_clus %>% 
+  dplyr::filter(!is.na(wui)) %>% 
+  group_by(gene_name, gene_id, cluster_id_target) %>% 
+  summarize(mean_dwui= mean(dwui, na.rm=T))
+
+### loading of DUL test summary table and merging with table
+
+DUL_test <- read_delim("input_data/df_dwui_kd6_clusters.mw_test.tsv.gz") %>% 
+  mutate(cluster_id_target=as.factor(cluster_id), 
+  DUL = as.factor(case_when(p.adj < 0.05 & dwui < 0 ~ "Shortening", 
+                            p.adj < 0.05 & dwui > 0 ~ "Lengthening",
+                            .default= "No change"))) %>%
+  dplyr::select(gene_name, gene_id, cluster_id_target, DUL, p.adj)
+
+df_WUI_ess_clus_sum1 <- left_join(df_WUI_ess_clus_sum, DUL_test, by= c("gene_name", "gene_id", "cluster_id_target")) 
+
+### loading of DGE test summary table and merging with table
+
+DGE_test <- read_tsv("input_data/df_dge_kd6_clusters.tsv.gz") %>%
+  dplyr::rename(cluster_id_target = cluster_id ) %>%
+   mutate(DGE = case_when(p.adj < 0.05 & l2fc < -log2(1.5) ~ "Downregulated", 
+                          p.adj < 0.05 & l2fc > log2(1.5) ~ "Upregulated",
+                          .default= "No change"),
+          cluster_id_target= as.factor(cluster_id_target)) %>%
+  dplyr::select(gene_name, gene_id, cluster_id_target, DGE, p.adj)
+
+exp_apa_comp <- full_join(DGE_test, df_WUI_ess_clus_sum1, by=c("gene_name", "gene_id", "cluster_id_target"), suffix=c(".exp", ".apa")) %>% 
+  filter(!cluster_id_target=="control")
+
+
+exp_apa_comp1 <- exp_apa_comp %>% 
+  filter(!is.na(DGE)) %>% 
+  group_by(cluster_id_target) %>% 
+  summarize(DUL_sig  = length(gene_name[(DGE == "No change") & DUL %in% c("Shortening","Lengthening")]),
+            DGE_sig  = length(gene_name[!DGE == "No change" & !DUL %in% c("Shortening","Lengthening")]),
+            Both_sig = length(gene_name[!(DGE == "No change") & DUL %in% c("Shortening","Lengthening")])
+            ) %>%
+  left_join(names, by="cluster_id_target") %>% 
+  pivot_longer(cols=c("DUL_sig", "DGE_sig", "Both_sig"), names_to="Regulation", values_to="Genes") %>% 
+  mutate(Regulation= factor(Regulation, level=c("DUL_sig", "Both_sig","DGE_sig")))
+
+  
+comparison_apa_exp_plot <- ggplot(exp_apa_comp1, 
+             aes(x=reorder(clus_name, -order_heatm_new), 
+             y= Genes, fill=Regulation)) +
+             geom_col()+
+             coord_flip()+
+             scale_fill_manual(values=c("#7bccc4","#44a2c9","#086aad")) +
+             scale_y_continuous(limits= c(0,2500), expand=c(0,0)) + 
+             xlab("")+
+             theme_bw()
+
+comparison_apa_exp_plot
+
+ggsave("Fig4c.pdf", comparison_apa_exp_plot)
+
+```
+
+---
+
+# Runtime Details
+## Session Info
+<details>
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+</details>
+
+## Conda Environment
+<details>
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```
+</details>
+

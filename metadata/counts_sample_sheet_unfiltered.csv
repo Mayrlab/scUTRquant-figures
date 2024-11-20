@@ -1,7 +1,0 @@
-sample_id,tissue,version,file_scutrquant,file_cellranger
-heart_1k_v2_fastq,heart,v2,data/sce/utrome_mm10_v1_unfiltered/heart_1k_v2_fastq.genes.Rds,data/counts/heart_1k_v2_filtered_feature_bc_matrix.h5
-heart_1k_v3_fastq,heart,v3,data/sce/utrome_mm10_v1_unfiltered/heart_1k_v3_fastq.genes.Rds,data/counts/heart_1k_v3_filtered_feature_bc_matrix.h5
-heart_10k_v3_fastq,heart,v3,data/sce/utrome_mm10_v1_unfiltered/heart_10k_v3_fastq.genes.Rds,data/counts/heart_10k_v3_filtered_feature_bc_matrix.h5
-neuron_1k_v2_fastq,neuron,v2,data/sce/utrome_mm10_v1_unfiltered/neuron_1k_v2_fastq.genes.Rds,data/counts/neuron_1k_v2_filtered_feature_bc_matrix.h5
-neuron_1k_v3_fastq,neuron,v3,data/sce/utrome_mm10_v1_unfiltered/neuron_1k_v3_fastq.genes.Rds,data/counts/neuron_1k_v3_filtered_feature_bc_matrix.h5
-neuron_10k_v3_fastq,neuron,v3,data/sce/utrome_mm10_v1_unfiltered/neuron_10k_v3_fastq.genes.Rds,data/counts/neuron_10k_v3_filtered_feature_bc_matrix.h5

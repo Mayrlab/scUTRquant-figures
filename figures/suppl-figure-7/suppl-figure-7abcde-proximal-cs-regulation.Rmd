@@ -1,0 +1,460 @@
+---
+title: "Fansler et al., Nature Communications, Suppl. Figure 7"
+author: "Sibylle Mitschka"
+output: 
+  html_document: 
+    code_folding: show
+    df_print: paged
+---
+
+## Loading of R packages
+(not all may be required for this code section)
+
+```{r message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(broom)
+library(Biostrings)
+library(ggpubr)
+library(rtracklayer)
+library(org.Hs.eg.db)
+library(RColorBrewer)
+library(biomaRt)
+library(GenomicFeatures)
+library(BSgenome)
+library(GeneOverlap)
+library(pheatmap)
+library(biomaRt)
+library(plyranges)
+library(ggrepel)
+library(writexl)
+library(gridExtra)
+library(readxl)
+
+```
+
+## (Down-)Loading relevant data sets.
+
+```{r}
+
+### this data file comprises the gene expression counts and WUI and pct_ipa values for all sgRNA and gene pair conditions
+
+df_WUIess <-readRDS("input_data/df_wui_kd6_essential_ui10.Rds")
+
+### This file provides the cluster identity for a subset of the perturbations (836 genes) which will be used to summarize the data on the cluster level, the clsuter_ids provided in this file do not match the final cluster numbers presented in the paper
+
+target_clus <- read.csv("input_data/df_target_nnclusters_kd6_essential_ui10.csv") %>% mutate(cluster_id_target= as.factor(cluster_id))
+
+### This file provides the names for the clusters and the conversion of the primary cluster id to the final cluster id used in the paper.
+
+names <- read.csv("input_data/names_perturbation_cluster.csv") %>% 
+  mutate(cluster_id_target = as.factor(cluster_id_target))
+
+### This file provides additional data on the subset of mRNA 3'ends that have been detected in this K562 data set. They will be used to derive further features such as mRNA lengths from the data.
+
+anno_ess <- read.csv("input_data/df_utrs_kd6_essential_ui10.csv")
+
+### Aparent scores of all cleavage sites in the MWS annotation.
+
+aparent <- read.csv("input_data/utrome_cleavage_sites.e30.t5.gc39.w205.l11.csv.gz")
+
+
+### This file provides the cluster identity for a subset of the perturbations (836 genes) which will be used to summarize the data on the cluster level, the clsuter_ids provided in this file do not match the final cluster numbers presented in the paper
+
+target_clus <- read.csv("input_data/df_target_nnclusters_kd6_essential_ui10.csv") %>% mutate(cluster_id_target= as.factor(cluster_id))
+
+
+### Load data for averaged isoform expression levels (TPM) in each perturbation cluster and non-trageting control condition.
+
+df_cluster <- readRDS("input_data/tpm_perturb/df_counts_tx_cluster_kd6.rds") %>%
+  dplyr::rename(cluster_id_target = cluster)
+
+### loading of DUL test summary table and merging with table
+
+DUL_test <- read_delim("input_data/df_dwui_kd6_clusters.mw_test.tsv.gz") %>% 
+  mutate(cluster_id_target=as.factor(cluster_id), 
+  DUL = as.factor(case_when(p.adj < 0.05 & dwui < 0 ~ "Shortening", 
+                            p.adj < 0.05 & dwui > 0 ~ "Lengthening",
+                            .default= "No change"))) %>%
+  dplyr::select(gene_name, gene_id, cluster_id_target, DUL, p.adj)
+
+
+### Download the relevant data file from the protein atlas database and define nuclear localization category by searching for "nucl"-containing terms in two different location categories. 
+
+url <- "https://v22.proteinatlas.org/download/subcellular_location.tsv.zip"
+
+temp <- tempfile()
+
+download.file(url, temp)
+
+localization <- read_tsv(temp, col_names = TRUE) %>% 
+  mutate(nuclear = case_when(str_detect(`Main location`, "Nucl") ~ "Yes", 
+                             str_detect(`Approved`, "Nucl") ~ "Yes",
+                             .default = "No")) %>%
+                   dplyr::rename("target_gene_id" = Gene, "target_gene" = `Gene name`)
+  
+unlink(temp)
+
+## average percentage of nuclear localization among all protein-coding genes is 53%.
+
+mean(localization$nuclear=="Yes", na.rm=TRUE)
+
+```
+
+## How often does isoform switching occur in each cluster?
+
+```{r}
+
+### Identify genes with significant DUL events in each cluster
+
+test <- DUL_test %>% 
+  #dplyr::rename(cluster_id_target= cluster_id) %>%
+  mutate(cluster_id_target = as.character(cluster_id_target)) %>%
+  dplyr::filter(DUL %in% c("Shortening", "Lengthening")) %>%
+  select(gene_name, gene_id, cluster_id_target) %>%
+  left_join(names, by="cluster_id_target") %>%
+  dplyr::rename(cluster=order_heatm_new) %>%
+  mutate(cluster= as.character(cluster))
+
+### Identify dominant 3'UTR isoform in each gene in the non-targeting condition.
+
+df_cluster_NTP <- df_cluster %>% 
+  dplyr::filter(cluster_id_target=="NTP") %>%
+  group_by(cluster_id_target, gene_name, gene_id) %>%
+  slice_max(counts, n=1, with_ties=FALSE) %>%
+  ungroup()
+
+### Identify dominant 3'UTR isoform in each gene in the 18 perturbation cluster conditions.
+  
+df_cluster_all <- df_cluster %>% 
+  dplyr::filter(!cluster_id_target=="NTP") %>%
+  group_by(cluster_id_target, gene_name, gene_id) %>%
+  slice_max(counts, n=1, with_ties=FALSE) %>%
+  ungroup() %>%
+  left_join(df_cluster_NTP[,-c(4,5)], by =c("gene_name", "gene_id"))
+
+### Merge both tables with the test and check whether the transcript IDs for the respective dominant isoform match. If yes, there is no switching event, if they differ the dominant isoform in the cluster changed.
+
+df_switching_cluster <- 
+  left_join(test, df_cluster_all, by= c("cluster_id_target", "gene_name", "gene_id")) %>%
+  mutate(switching= !transcript_id.x==transcript_id.y) %>%
+  group_by(cluster_id_target, switching) %>%
+  count()
+
+plot_cluster_switch <- df_switching_cluster %>%
+  mutate(cluster= factor(cluster_id_target, level= seq(1:18))) %>%
+  ggplot(aes(y=cluster, x=n, fill=switching))+
+  scale_y_discrete(limits=rev) +
+  scale_fill_manual(values=c("lightgrey","cadetblue"))+
+  scale_x_continuous("Fraction of DUL events", position = "top", expand=c(0,0)) +
+  geom_bar(position="fill", stat="identity") +
+  theme_bw()
+plot_cluster_switch
+
+ggsave("Figure_outputs/Sup_Fig7a.pdf", plot_cluster_switch)
+
+```
+
+
+
+In this section we analyzed the number of clusters that were significantly affecting the 3'UTR expression for all multi_UTR genes and the relationship to their proximal and distal PAS quality.
+
+
+Based on the non-targeting control sgRNA conditions in the data set (n=97 individual pairs) we first  calculated the baseline mean for all genes' WUI, IPA (named pct_ipa) and total expression values. 
+To reduce the noise in the data, mean_wui and mean_ipa were replaced with NA for genes with a mean_tpm <5. Similar to 3'UTR APA, a gene's IPA was only considered when it ranged between 10 and 90%.
+Next, these values were used to calculate the relative deviations in these metrics in the perturbed conditions, i.e. dwui, fc_tpm and dipa. 
+
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+
+nontarg_ess <- df_WUIess %>% 
+  filter(target_gene=="non-targeting") %>% 
+  group_by(gene_name, gene_id) %>%
+  summarize(mean_tpm = mean(tpm, na.rm=TRUE),
+            sd_tpm = sd(tpm, na.rm=TRUE),
+            mean_wui = mean(wui, na.rm=TRUE),
+            sd_wui= sd(wui, na.rm=TRUE), 
+            mean_ipa = mean(pct_ipa, na.rm=TRUE),
+            sd_ipa= sd(pct_ipa, na.rm=TRUE)) %>%
+  mutate(mean_wui = if_else(mean_tpm>= 5, mean_wui, NA),
+         mean_ipa = if_else(mean_tpm>= 5 & mean_ipa>=0.1 & mean_ipa<= 0.9 , mean_ipa, NA),
+         sd_wui= if_else(mean_tpm>= 5,sd_wui, NA),
+         sd_ipa= if_else(mean_tpm>= 5 & mean_ipa>=0.1 & mean_ipa<= 0.9 ,sd_ipa, NA))
+
+            
+df_WUIess1 <- left_join(df_WUIess, 
+                        nontarg_ess, by=c("gene_id", "gene_name"), 
+                        multiple="all") %>%
+              mutate(dwui = wui-mean_wui, 
+                     dipa = pct_ipa-mean_ipa,
+                     fc_tpm = log2(tpm/mean_tpm))
+
+
+### Cluster labels are added to the data frame and used to calculate mean dwui values for each gene and cluster
+
+df_WUI_ess_clus <- left_join(df_WUIess1, target_clus, by=c("target_gene", "target_gene_id", "sgID_AB"))
+
+df_WUI_ess_clus_sum <-  df_WUI_ess_clus %>% 
+  dplyr::filter(!is.na(wui)) %>% 
+  group_by(gene_name, gene_id, cluster_id_target) %>% 
+  summarize(mean_dwui= mean(dwui, na.rm=T))
+
+df_WUI_ess_clus_sum1 <- left_join(df_WUI_ess_clus_sum, DUL_test, by= c("gene_name", "gene_id", "cluster_id_target")) 
+```
+
+```{r}
+# Identify genes with exactly two 3'UTR isoforms in the data set
+
+anno_ess_2UTR_list <- anno_ess %>% 
+  group_by(gene_name) %>% 
+  filter(length(gene_name)==2) %>% 
+  pull(gene_name) %>% 
+  unique()
+
+length(anno_ess_2UTR_list)
+
+# Create new data frame by filtering for the genes in "anno_ess_2UTR_list" and estimate isoform expression levels from total gene expression (after considering ipa) and wui. The results were summarized on the level of the perturbation cluster (means).
+
+nontarg_ess_iso <- df_WUI_ess_clus %>% 
+  filter(target_gene=="non-targeting", 
+         gene_name %in% anno_ess_2UTR_list) %>% 
+  mutate(pct_ipa = replace_na(pct_ipa, 0)) %>%
+  group_by(gene_name, gene_id) %>%
+  summarise(mean_wui = mean(wui, na.rm=TRUE), 
+            mean_tpm = mean(tpm, na.rm=TRUE), 
+            mean_ipa = mean(pct_ipa, na.rm=TRUE),
+            mean_SU_tpm=mean((1-pct_ipa)*tpm*(1-wui), na.rm=TRUE),
+            mean_LU_tpm=mean((1-pct_ipa)*tpm*wui, na.rm=TRUE))
+
+
+df_WUI_ess_clus_iso <- df_WUI_ess_clus %>% 
+  filter(gene_name %in% anno_ess_2UTR_list) %>% 
+  mutate(pct_ipa = replace_na(pct_ipa, 0)) %>%
+  group_by(gene_name, gene_id, cluster_id_target) %>%
+  summarise(wui = mean(wui, na.rm=TRUE), 
+            tpm = mean(tpm,na.rm=TRUE), 
+            ipa = mean(pct_ipa,na.rm=TRUE),
+            SU_tpm=mean((1-pct_ipa)*tpm*(1-wui), na.rm=TRUE),
+            LU_tpm=mean((1-pct_ipa)*tpm*wui, na.rm=TRUE))
+
+
+df_WUI_ess_clus_iso1 <- left_join(df_WUI_ess_clus_iso, nontarg_ess_iso, 
+                                  by=c("gene_id", "gene_name")) %>%
+  mutate(fc_tpm = log2(tpm/mean_tpm),
+         fc_SU_tpm = log2(SU_tpm/mean_SU_tpm),
+         fc_LU_tpm = log2(LU_tpm/mean_LU_tpm),
+         dSU_tpm = SU_tpm- mean_SU_tpm,
+         dLU_tpm = LU_tpm- mean_LU_tpm)
+
+### now summarize to the cluster level
+
+pert_clus_iso <- df_WUI_ess_clus_iso1 %>% group_by(gene_name, gene_id, cluster_id_target) %>% 
+  summarize(fc_tpm = mean(fc_tpm, na.rm=T),
+            fc_SU_tpm = mean(fc_SU_tpm, na.rm=T),
+            fc_LU_tpm =  mean(fc_LU_tpm, na.rm=T),
+            dSU_tpm = mean(dSU_tpm, na.rm=T),
+            dLU_tpm =  mean(dLU_tpm, na.rm=T)
+            ) %>%
+  ungroup()
+
+df_WUI_ess_clus_sum2 <- df_WUI_ess_clus_sum1 %>% 
+  ungroup() %>%
+  filter(!DUL == "No change", !cluster_id_target %in% c("control", "NA")) %>% 
+  left_join(names, by="cluster_id_target") %>% ungroup()
+
+### 1. combine with table of genes that contains only significant APA results
+### 2. define different Regulation categories
+### 3. summary plot 
+
+### Note: We need to add an extra row for cluster 16 for the lengthening set in order to have two equally-sized data frames.
+
+pert_clus_iso_Len <- pert_clus_iso %>% 
+  inner_join(df_WUI_ess_clus_sum2, by=c("gene_name", "gene_id", "cluster_id_target")) %>% filter(!is.na(cluster_id_target)) %>% 
+  filter(DUL=="Lengthening") %>% 
+  group_by(cluster_id_target) %>%
+  summarize("Lengthening w/ compensation"= sum(dLU_tpm/dSU_tpm <= -0.5 & dLU_tpm/dSU_tpm >= -2),
+            "Lengthening w/o compensation"= sum(dLU_tpm/dSU_tpm > -0.5 | dLU_tpm/dSU_tpm <  -2),
+            "Lengthening w/o compensation SU down only"= sum(dLU_tpm/dSU_tpm > -0.5),
+            "Lengthening w/o compensation LU up only"= sum(dLU_tpm/dSU_tpm < -2)) %>%
+  add_row(cluster_id_target="16", 
+          "Lengthening w/ compensation" =0, 
+          "Lengthening w/o compensation" =0,
+          "Lengthening w/o compensation SU down only"=0, 
+          "Lengthening w/o compensation LU up only"=0)
+
+pert_clus_iso_Sho <-  pert_clus_iso %>% inner_join(df_WUI_ess_clus_sum2, by=c("gene_name", "gene_id", "cluster_id_target")) %>% filter(!is.na(cluster_id_target)) %>% 
+  filter(DUL=="Shortening") %>% 
+  group_by(cluster_id_target) %>%
+  summarize("Shortening w/ compensation"= sum(dSU_tpm/dLU_tpm <= -0.5 & dSU_tpm/dLU_tpm >= -2),
+            "Shortening w/o compensation"= sum(dSU_tpm/dLU_tpm > -0.5 | dSU_tpm/dLU_tpm < -2),
+            "Shortening w/o compensation SU up only"= sum(dSU_tpm/dLU_tpm > -0.5),
+            "Shortening w/o compensation LU down only"= sum(dSU_tpm/dLU_tpm < -2))
+
+pert_clus_iso1 <- left_join(pert_clus_iso_Len, pert_clus_iso_Sho, by ="cluster_id_target") %>%
+  mutate("Compensation" = `Lengthening w/ compensation`+`Shortening w/ compensation`,
+         "No compensation"= `Lengthening w/o compensation`+ `Shortening w/o compensation`,
+         "Compensation_ratio" =  `Compensation`/(`Compensation`+`No compensation`)) %>%
+  left_join(names, by="cluster_id_target") %>%
+  mutate("SU regulation"= `Lengthening w/o compensation SU down only` + `Shortening w/o compensation SU up only`,
+         "LU regulation" = `Lengthening w/o compensation LU up only` + `Shortening w/o compensation LU down only`,
+         "Balanced regulation" = `Lengthening w/ compensation`+ `Shortening w/ compensation`)
+```
+
+Now, we are testing the hypothesis that compensation (i.e coordinated or balances isoform expression regulation) is mostly occurring through processes involved with nuclear mRNA processing. For this purpose, we downloaded the subcellular location data set from the human protein atlas v22.0 to evaluate protein localization for each analyzed perturbation in a cluster. Proteins were classified as having nuclear localization if they had relevant terms in either the "main" or "approved" location category of the database. We then calculated the fraction of genes with such terms for all members within each cluster and plotted these against the fraction of balanced DUL events.
+
+```{r}
+
+## Combine localization data with table listing the components of the target cluster.
+
+target_clus_1 <- left_join(target_clus, localization[,c(1,2,15)], by= c("target_gene","target_gene_id")) %>%   group_by(cluster_id) %>% 
+  summarize(nuc_frac = mean(nuclear=="Yes", na.rm=T)) %>%
+  dplyr::rename("cluster_id_target"= cluster_id) %>%
+  mutate(cluster_id_target = as.factor(cluster_id_target)) %>% 
+  right_join(names, by ="cluster_id_target")
+
+### Generate dot plot. Dot size denotes number of cluster members.
+
+compensation.new <- pert_clus_iso1 %>%
+  right_join(target_clus_1, by=c("clus_name","cluster_id_target","n_targets")) %>%
+  ggplot(aes(y=Compensation_ratio*100, x=nuc_frac*100))+ 
+  geom_point(aes(size=n_targets), col="cadetblue")+ 
+  stat_cor(method="spearman")+
+  ylab("% of regulated genes with compensation")+
+  xlab("% of genes with nuclear proteins in cluster")+
+  guides(size=guide_legend(title="Number of genes in cluster"))+
+  geom_text_repel(aes(label= as.character(clus_name)), box.padding= 0.6, point.padding = 0.2) +
+  theme_bw()
+
+compensation.new
+
+ggsave("Figure_outputs/Sup_Fig7b.pdf", compensation.new, height=4, width=6.5)
+
+```
+
+```{r}
+
+Genes <- df_WUI_ess_clus_sum1 %>%
+  filter(!cluster_id_target == "control", !is.na(cluster_id_target)) %>%
+  group_by(gene_name, gene_id) %>% summarize(Shortening = sum(DUL=="Shortening"), 
+                                    Lengthening = sum(DUL =="Lengthening"),
+                                    Combined = Shortening+Lengthening)
+
+nontarg_ess1 <- left_join(nontarg_ess, Genes, by=c("gene_name", "gene_id")) %>%
+  filter(!is.na(Combined)) %>%
+  mutate(Regulation = case_when(Combined == 0 ~ "None",
+                                Combined %in% c(1,2) ~ "Low",
+                                Combined %in% c(3:5) ~ "Medium",
+                                Combined > 5  ~ "High"))
+
+nontarg_ess1 %>% 
+  group_by(Combined) %>%
+  dplyr::count(Combined)
+
+Reg_summary_plot <- nontarg_ess1 %>% 
+  group_by(Combined) %>%
+  dplyr::count(Combined) %>%
+  mutate(Regulation = case_when(Combined == 0 ~ "None",
+                                Combined %in% c(1,2) ~ "Low",
+                                Combined %in% c(3:5) ~ "Medium",
+                                Combined > 5  ~ "High"),
+         Regulation = factor(Regulation, levels=c("None", "Low", "Medium", "High"))) %>%  
+  ggplot(aes(y=n, x= Combined, fill=Regulation))+
+  geom_col(col="black") +
+  xlab("No. of significant clusters per gene") +
+  ylab("No. of multi-UTR genes") +
+  scale_fill_manual(values= c("#3182BE","#6BADD6","#C7DBEE","#F0F3FA"))+
+  theme_bw()
+
+Reg_summary_plot
+
+ggsave("Figure_outputs/Sup_Fig7c.pdf", Reg_summary_plot, height=2.5, width=3)
+
+```
+
+Analysis of cleavage sites quality for proximal and distal sites and the regulatory potential of genes 
+
+
+```{r}
+
+anno_aparent <- left_join(anno_ess, aparent[,c(1,12,13,14)], by="transcript_id") %>%
+  mutate("logit_cut" = qlogis(likelihood_full))
+
+anno_aparent1 <- anno_aparent[,-c(6,7,9:13)] %>% 
+  filter(utr_wt %in% c(0,1)) %>%
+  pivot_wider(id_cols=c("gene_name", "gene_id", "ensembl_id"), names_from= utr_wt, values_from=c("logit_cut")) %>%
+  mutate(cut_diff = `1`-`0`)
+
+
+nontarg_ess2 <- left_join(nontarg_ess1, anno_aparent1, by= c("gene_name", "gene_id")) 
+
+SU_apa <- nontarg_ess2 %>% 
+  filter(!is.na(Combined)) %>% 
+  ggplot(aes(y=`0`, x=reorder(Regulation, mean_tpm), fill=reorder(Regulation, - mean_tpm)))+ 
+  geom_violin()+
+  geom_boxplot(outlier.shape = NA, width=0.3)+
+  guides(fill="none")+
+  ylim(c(-6,10))+
+  labs(x="Regulatory potential of gene", y="Logit (APARENT2 cleavage probability)")+
+  scale_fill_manual(values= c("#3182BE","#6BADD6","#C7DBEE","#F0F3FA"))+
+  theme_bw()
+
+SU_apa
+
+kruskal.test(nontarg_ess2$`0` ~ nontarg_ess2$Regulation)
+pairwise.wilcox.test(nontarg_ess2$`0`, nontarg_ess2$Regulation,
+                 p.adjust.method = "BH")
+
+ggsave("Figure_outputs/Sup_Fig7d.pdf", SU_apa, width=4, height=3)
+```
+
+```{r}
+
+LU_apa <- nontarg_ess2 %>% filter(!is.na(Combined)) %>% 
+  ggplot(aes(y=`1`, x=reorder(Regulation, mean_tpm), fill=reorder(Regulation, - mean_tpm)))+ 
+  geom_violin()+
+  geom_boxplot(outlier.shape = NA, width=0.3)+
+  guides(fill="none")+
+  ylim(c(-6,10))+
+  scale_fill_manual(values= c("#3182BE","#6BADD6","#C7DBEE","#F0F3FA"))+
+  labs(x="Regulatory potential of gene", y="Logit (APARENT2 cleavage probability)")+
+  theme_bw()
+
+LU_apa
+
+kruskal.test(nontarg_ess2$`1` ~ nontarg_ess2$Regulation)
+pairwise.wilcox.test(nontarg_ess2$`1`, nontarg_ess2$Regulation,
+                 p.adjust.method = "BH")
+
+ggsave("Figure_outputs/Sup_Fig7e.pdf", LU_apa, width=4, height=3)
+
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+<details>
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+</details>
+
+## Conda Environment
+<details>
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```
+</details>
+
+
+

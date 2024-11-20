@@ -1,0 +1,229 @@
+---
+title: "Fansler et al., Nature Communications, Figure 1h"
+author: "Sibylle Mitschka"
+output: 
+  html_document: 
+    code_folding: show
+    df_print: paged
+---
+
+Loading of R packages (not all may be required for this code section).
+
+```{r message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(broom)
+library(Biostrings)
+library(ggpubr)
+library(rtracklayer)
+library(org.Hs.eg.db)
+library(RColorBrewer)
+library(biomaRt)
+library(GenomicFeatures)
+library(BSgenome)
+library(GeneOverlap)
+library(pheatmap)
+library(biomaRt)
+library(plyranges)
+library(ggrepel)
+library(writexl)
+library(gridExtra)
+library(readxl)
+
+```
+
+First, we create a histgram showing the proportion of CS that are used in either more or less than 10% of cell types in which the gene is detected. The data for this analysis are stored in Suppl. Data 1
+
+```{r warning=FALSE}
+
+### MWS cleavage site atlas
+
+CS_hs <- read_xlsx("Table_outputs/Suppl_Data1.xlsx", sheet="MWS CS Annots (HCL)")
+
+plot_histogram_human <- ggplot(CS_hs, aes(x=cs_usage_score, fill=cs_usage_class))+
+  geom_histogram(binwidth = 0.02)+
+  scale_fill_manual(values=c("cadetblue","grey"))+
+  theme_bw()
+
+CS_hs %>% count(cs_usage_class)
+
+ggsave("Figure_outputs/Fig1g.pdf", plot_histogram_human)
+
+```
+Comparison of the human MWS annoation with two other CS databases with regards to the number of 3'ends across protein-coding genes. 
+
+Procedure: We load information for all three annoations and convert them to GRanges. For the polyA_DB, we also need to convert the entries from Hg19 to Hg38 reference coordinates using the appropriate liftover chain files.
+
+```{r}
+CS_gr_hs <- makeGRangesFromDataFrame(CS_hs,
+                         keep.extra.columns=TRUE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field="seq",
+                         start.field="end_3p",
+                         end.field="end_3p",
+                         strand.field="strand",
+                         starts.in.df.are.0based=FALSE)
+
+### PolyAsite2.0
+
+url <- "https://polyasite.unibas.ch/download/atlas/2.0/GRCh38.96/atlas.clusters.2.0.GRCh38.96.tsv.gz"
+
+polA_site_hs <- read_tsv(url, col_names=TRUE) %>% 
+  dplyr::select(c(1:13))
+
+colnames(polA_site_hs) <- c("chromosome", "start", "end", "cluster_id", "TPM", "strand", 
+                         "PAS_pos", "perc_samples_detected", "no_samples_detected","type", 
+                         "gene_name", "gene_id", "PAS")
+
+polA_site_gr_hs <- makeGRangesFromDataFrame(polA_site_hs,
+                         keep.extra.columns=TRUE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field= "Chromosome",
+                         start.field="start",
+                         end.field= "end",
+                         strand.field= "strand",
+                         starts.in.df.are.0based=FALSE)
+
+seqlevelsStyle(polA_site_gr_hs) <- "UCSC"
+
+### PolyA DB v3.2
+
+url <- "https://exon.apps.wistar.org/polya_db/v3/download/3.2/human_pas.zip"
+temp <- tempfile()
+download.file(url,temp)
+polA_db_hs <- read_tsv(temp)
+unlink(temp)
+
+polyA_db_gr_hs <- makeGRangesFromDataFrame(polA_db_hs,
+                         keep.extra.columns=TRUE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field= "Chromosome",
+                         start.field="Position",
+                         end.field= "Position",
+                         strand.field="Strand",
+                         starts.in.df.are.0based=FALSE)
+
+seqlevelsStyle(polyA_db_gr_hs) <- "UCSC"
+
+#### perform liftover of granges from Hg19 to Hg38.
+
+path = "input_data/annotation/hg19ToHg38.over.chain"
+
+ch <- import.chain(path)
+
+polyA_db_gr_38_hs <-  rtracklayer::liftOver(polyA_db_gr_hs, ch) %>% 
+  unlist()
+
+```
+
+Next, we are comparing the number of CS per gene for all three databases. For the MWS atlas, we are subsetting the pool to "major" CS (39,978 transcripts in 17,049 genes). 
+For other e are restricting this analysis to protein-coding genes for which we rely on the gene labels that have  been assigned by the individual databases.
+
+```{r}
+
+### Identify protein-coding genes and remove their gene_ID version labels.
+
+gencode <- makeTxDbFromGFF("input_data/annotation/gencode.v39.mRNA_ends_found.gff3.gz")
+
+protein_coding_genes <- names(cdsBy(gencode, "gene")) %>% sub('\\.[0-9]*$', '', .)
+         
+
+## Prepare MWS atlas table (These CS are already restrcited to protein-coding genes).
+MWS_major_census_hs <- CS_hs %>% 
+  dplyr::filter(cs_usage_class == "major") %>%
+  count(gene_id) %>%
+  count(n) %>%
+  mutate(isoforms= ifelse(n<10, n, ">9")) %>%
+  group_by(isoforms) %>%
+  summarize(genes= sum(nn)) %>%
+  mutate(DB= "MWS atlas, major isoforms")
+
+### Protein-coding genes in MWS: 17049
+CS_hs %>% 
+  dplyr::filter(cs_usage_class == "major") %>%
+  count(gene_id) %>%
+  nrow()
+
+### Prepare PolyA Site 2.0 table and filter to protein-coding genes.
+polyA_site_census_hs <- polA_site_hs %>% 
+  dplyr::filter(gene_id %in% protein_coding_genes) %>%
+  count(gene_id) %>%
+  count(n) %>%
+  mutate(isoforms= ifelse(n<10, n, ">9")) %>%
+  group_by(isoforms) %>%
+  summarize(genes= sum(nn)) %>%
+  mutate(DB= "PolyASite 2.0")
+
+### Protein-coding genes in PolyASite2.0: 17351
+polA_site_hs %>% 
+  dplyr::filter(gene_id %in% protein_coding_genes) %>%
+  count(gene_id) %>%
+  nrow()
+
+### Prepare PolyA_DB table and filter to protein-coding genes.
+polA_db_census_hs <- polA_db_hs %>% 
+  dplyr::filter(`Ensemble ID` %in% protein_coding_genes) %>%
+  count(`Gene Symbol`) %>%
+  count(n) %>%
+  mutate(isoforms= ifelse(n<10, n, ">9")) %>%
+  group_by(isoforms) %>%
+  summarize(genes= sum(nn)) %>%
+  mutate(DB= "PolyA_DB V3.2")
+
+### Protein-coding genes in PolyASite2.0: 16872
+polA_db_hs %>% 
+  dplyr::filter(`Ensemble ID` %in% protein_coding_genes) %>%
+  count(`Gene Symbol`) %>%
+  nrow()
+
+### Combine all database tables into a single dataframe. Create a catorgory for genes with 10 or more CS.
+
+hs_census <- rbind(polA_db_census_hs, polyA_site_census_hs, MWS_major_census_hs) %>%
+  mutate(isoforms =factor(isoforms, levels=c(seq(1:9), ">9"))) %>%
+  dplyr::filter(!is.na(isoforms))
+
+### Create a distribution plot for human database entries. Save the output.
+
+plot_hs <- ggplot(hs_census, aes(x=isoforms, y=genes/1000, fill=DB))+ 
+  geom_col(position="dodge", col="black")+ 
+  scale_y_continuous(limits = c(0,10), "Genes x 1,000 [human]", expand = c(0,0)) +
+  scale_x_discrete("Number of CS per gene") +
+  scale_fill_manual(values=c("#00a79d", "#756bb0", "#bcbddb"))+
+  theme_bw()
+plot_hs
+
+ggsave("Figure_outputs/Fig1h.pdf", plot_hs)
+
+```
+
+---
+
+# Runtime Details
+## Session Info
+<details>
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+</details>
+
+## Conda Environment
+<details>
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```
+</details>
+
+
+

@@ -1,0 +1,285 @@
+---
+title: "Fansler et al., Nature Communications, Suppl. Figure 6"
+author: "Sibylle Mitschka"
+output: 
+  html_document: 
+    code_folding: show
+    df_print: paged
+---
+
+Loading of R packages (not all may be required for this code section). 
+
+
+```{r message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(broom)
+library(Biostrings)
+library(ggpubr)
+library(rtracklayer)
+library(org.Hs.eg.db)
+library(RColorBrewer)
+library(biomaRt)
+library(GenomicFeatures)
+library(BSgenome)
+library(GeneOverlap)
+library(pheatmap)
+library(biomaRt)
+library(plyranges)
+library(ggrepel)
+library(writexl)
+library(gridExtra)
+library(readxl)
+
+```
+
+Load Supplentary Data 6
+
+```{r}
+
+sum_clus <- read_xlsx("Table_outputs/Supplementary_Data_6.xlsx") %>%
+  dplyr::rename(target_gene = Gene_symbol)
+
+```
+
+These are the top regulators of APA and IPA (shown in Suppl. Fig 6a) in the Perturb-seq data set.
+
+```{r}
+
+sum_clus %>% 
+  slice_max(a_dwui, n=10)
+
+sum_clus %>% 
+  slice_max(a_dipa, n=10)
+
+sum_clus %>% 
+  slice_min(a_dwui, n=10)
+
+sum_clus %>% 
+  slice_min(a_dipa, n=10)
+
+```
+
+In Suppl. Figure 6d-h we show overview plots for global APA and IPA changes caused by perturbations of known components of cleavage factor complexes. The sets of genes included in each complex have been selected based on a comprehensive literature search. Please note that some of the genes that are part of a known sub-complex may not be represented in this Perturb-seq data set (e.g. CSTF2 and LEO1).
+
+Here we are using a summary of global average deviations of WUI and IPA for each perturbation, called a_dwui and a_dipa, respectively. Theses data are provided as Supplementary Data 6.
+
+```{r}
+
+
+gene_set_cpsf <- c("non-targeting","CPSF1","CPSF2","CPSF3","CPSF4","FIP1L1","SYMPK", "WDR33")
+gene_set_cfim <- c("non-targeting","NUDT21","CPSF6")
+gene_set_cstf <- c("non-targeting","CSTF1","CSTF2","CSTF3","CSTF4")
+gene_set_cfiim <- c("non-targeting","PCF11","CLP1")
+gene_set_paf <- c("non-targeting","PAF1","CTR9","RTF1","LEO1","CDC73", "SKIC8")
+
+
+cfim <- sum_clus %>% 
+  filter(target_gene %in% gene_set_cfim) %>%
+  group_by(sgID_AB, target_gene) %>%
+  ggplot(aes(x=a_dwui, y= a_dipa, fill=target_gene, label=target_gene)) + 
+          geom_hline(yintercept=0, col="lightgrey") +
+          geom_vline(xintercept=0, col="lightgrey") +
+          geom_point(aes(size=target_gene), pch=21, stroke=0.5) +
+          coord_cartesian(xlim=c(-0.15,0.05),ylim=c(-0.1,0.1)) +
+          scale_fill_manual(breaks=gene_set_cfim, values=c("grey80", rep("skyblue2",6))) +
+          scale_size_manual(breaks=gene_set_cfim, values=c(2, 4, 4)) +
+          geom_text_repel(aes(label= ifelse(target_gene=="non-targeting",'',
+                        as.character(target_gene))),   
+                        box.padding= 0.6, 
+                        point.padding = 0.5) +
+          guides(fill = FALSE, size=FALSE) +
+          xlab("Average dWUI") +
+          ylab("Average dIPA") +
+          theme_bw()
+
+cpsf <- sum_clus %>% 
+  filter(target_gene %in% gene_set_cpsf) %>%
+  group_by(sgID_AB, target_gene) %>% 
+  ggplot(aes(x=a_dwui, y= a_dipa, fill=target_gene, label=target_gene)) + 
+          geom_hline(yintercept=0, col="lightgrey")+
+          geom_vline(xintercept=0, col="lightgrey")+
+          geom_point(aes(size=target_gene), pch=21, stroke=0.5)+
+          coord_cartesian(xlim=c(-0.02,0.04), ylim=c(-0.04,0.02)) +
+          scale_fill_manual(breaks=gene_set_cpsf, 
+                            values=c("grey80", rep("mediumseagreen",7))) +
+          scale_size_manual(breaks=gene_set_cpsf,
+                    values=c(2, rep(4,7))) +
+          geom_text_repel(aes(label=ifelse(target_gene=="non-targeting",'',
+                    as.character(target_gene))), 
+                    box.padding= 0.6, 
+                    point.padding = 0.5) +
+          guides(fill = FALSE, size=FALSE) +
+          xlab("Average dWUI")+
+          ylab("Average dIPA")+
+          theme_bw()
+
+
+cstf <- sum_clus %>% 
+  filter(target_gene %in% gene_set_cstf) %>%
+  group_by(sgID_AB, target_gene) %>% 
+  ggplot(aes(x=a_dwui, y= a_dipa, fill=target_gene, label=target_gene)) + 
+          geom_hline(yintercept=0, col="lightgrey")+
+          geom_vline(xintercept=0, col="lightgrey")+
+          geom_point(aes(size=target_gene), pch=21, stroke=0.5)+
+          coord_cartesian(xlim=c(-0.02,0.03), ylim=c(-0.03,0.02))+
+          scale_fill_manual(breaks=gene_set_cstf, values=c("grey80", rep("sienna2", 4))) +
+          scale_size_manual(breaks=gene_set_cstf, values=c(2, rep(4,4))) +
+          geom_text_repel(aes(label=ifelse(target_gene=="non-targeting",'',
+                    as.character(target_gene))),
+                    box.padding= 0.6, 
+                    point.padding = 0.5) +
+          guides(fill = FALSE, size=FALSE) +
+          xlab("Average dWUI")+
+          ylab("Average dIPA")+
+          theme_bw()
+
+cfiim <- sum_clus %>% 
+  filter(target_gene %in% gene_set_cfiim) %>%
+  group_by(sgID_AB, target_gene) %>% 
+  ggplot(aes(x=a_dwui, y= a_dipa, fill=target_gene, label=target_gene)) + 
+          geom_hline(yintercept=0, col="lightgrey")+
+          geom_vline(xintercept=0, col="lightgrey")+
+          geom_point(aes(size=target_gene), pch=21, stroke=0.5)+
+          coord_cartesian(xlim=c(-0.02,0.03), ylim=c(-0.02,0.03))+
+          scale_fill_manual(breaks=gene_set_cfiim, 
+                            values=c("grey80", rep("lightsteelblue1", 2))) +
+          scale_size_manual(breaks=gene_set_cfiim,
+                    values=c(2, rep(4,2))) +
+          geom_text_repel(aes(label=ifelse(target_gene=="non-targeting",'',
+                    as.character(target_gene))),    
+                    box.padding= 0.6, 
+                    point.padding = 0.5) +
+          guides(fill = FALSE, size=FALSE) +
+          xlab("Average dWUI")+
+          ylab("Average dIPA")+
+          theme_bw()
+
+paf <- sum_clus %>% 
+  filter(target_gene %in% gene_set_paf) %>%
+  group_by(sgID_AB, target_gene) %>% 
+  ggplot(aes(x=a_dwui, y= a_dipa, fill=target_gene, label=target_gene)) + 
+          geom_hline(yintercept=0, col="lightgrey")+
+          geom_vline(xintercept=0, col="lightgrey")+
+          geom_point(aes(size=target_gene), pch=21, stroke=0.5)+
+          coord_cartesian(xlim=c(-0.02,0.03), ylim=c(-0.02,0.03))+
+          scale_fill_manual(breaks=gene_set_paf, values=c("grey80", rep("plum4", 6))) +
+          scale_size_manual(breaks=gene_set_paf,
+                    values=c(2, rep(4,6))) +
+          geom_text_repel(aes(label=ifelse(target_gene=="non-targeting",'',
+                    as.character(target_gene))),    
+                    box.padding= 0.6, 
+                    point.padding = 0.5) +
+          guides(fill = FALSE, size=FALSE) +
+          xlab("Average dWUI")+
+          ylab("Average dIPA")+
+          theme_bw()
+
+
+Sup_Fig6dh <- grid.arrange(cpsf, cstf, cfim, cfiim, paf, ncol=3, nrow=2)
+
+ggsave("Figure_outputs/Sup_Fig6d-h.pdf", Sup_Fig6dh, height=8, width=12)
+
+
+```
+
+
+Reviewer question: "When GE and UTR isoform were compared between different samples, the two were often regulated in different set of genes. Have the authors checked whether GE was more likely changed for single UTR genes, in particular for the perturbation of core CPA machinery?"
+
+In response to this question we created Suppl Figure 6j.
+
+1. Loading the differential 3'UTR length test results for the Perturb seq analysis
+
+```{r}
+
+transcripts <- read_excel("Input_data/MWS_data/Human_Gene_Annotation.xlsx", sheet = "Transcripts - Human UTRome")
+
+names <- read.csv("input_data/names_perturbation_cluster.csv") %>% mutate(cluster_id_target= as.factor(cluster_id_target))
+
+DUL_test <- read_delim("input_data/df_dwui_kd6_clusters.mw_test.tsv.gz") %>% 
+  mutate(cluster_id_target=as.factor(cluster_id), 
+  DUL = as.factor(case_when(p.adj < 0.05 & dwui < 0 ~ "Shortening", 
+                            p.adj < 0.05 & dwui > 0 ~ "Lengthening",
+                            .default= "No change"))) %>%
+  dplyr::select(gene_name, gene_id, cluster_id_target, DUL, p.adj)
+
+DGE_test <- read_tsv("input_data/df_dge_kd6_clusters.tsv.gz") %>%
+  dplyr::rename(cluster_id_target = cluster_id ) %>%
+   mutate(DGE = case_when(p.adj < 0.05 & l2fc < -log2(1.5) ~ "Downregulated", 
+                          p.adj < 0.05 & l2fc > log2(1.5) ~ "Upregulated",
+                          .default= "No change"),
+          cluster_id_target= as.factor(cluster_id_target)) %>%
+  dplyr::select(gene_name, gene_id, cluster_id_target, DGE, p.adj)
+
+```
+
+2. Creating plot
+```{r}
+
+### First we are calculating the fraction of multi-UTR genes among all tested  DGE genes. This number will be used to draw a reference line in the later plot.
+
+fract_single <- left_join(DGE_test, transcripts, by= c("gene_name", "gene_id")) %>%
+  distinct(gene_id, .keep_all=TRUE) %>%
+  group_by(atlas.utr_type) %>%
+  count() %>%
+  pull(n)
+fract_single <- fract_single[2]/(fract_single[1]+ fract_single[2])
+
+perc_single_DGE_plot <- transcripts %>% 
+  dplyr::select(gene_name, gene_id, atlas.utr_type) %>%
+  right_join(DGE_test, by= c("gene_name", "gene_id")) %>% 
+  dplyr::filter(!DGE=="No change") %>%
+  group_by(cluster_id_target, atlas.utr_type) %>%
+  count() %>%
+  left_join(names, by ="cluster_id_target") %>%
+  ggplot(aes(y= reorder(clus_name, -order_heatm_new), x=n, fill=atlas.utr_type))+
+  geom_bar(position="fill", stat="identity")+
+  scale_x_continuous("Fraction of signif. DGE genes", expand=c(0,0))+
+  scale_y_discrete("Perturbation cluster", expand=c(0,0))+
+  geom_vline(xintercept=fract_single, col="white", linetype="dashed")+
+  theme_bw()
+
+perc_single_DGE_plot
+  
+### These are the numbers of signif. DGE genes per cluster (added at the side of Suppl. Figure 6i).
+
+transcripts %>% 
+  dplyr::select(gene_name, gene_id, atlas.utr_type) %>%
+  right_join(DGE_test, by= c("gene_name", "gene_id")) %>% 
+  dplyr::filter(!DGE=="No change") %>%
+  group_by(cluster_id_target) %>%
+  count() %>%
+  left_join(names, by ="cluster_id_target") %>%
+  arrange(order_heatm_new)
+
+ggsave("Figure_outputs/Sup_Fig6j.pdf", perc_single_DGE_plot)
+
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+<details>
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+</details>
+
+## Conda Environment
+<details>
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```
+</details>
+

@@ -1,0 +1,228 @@
+---
+title: "Fansler et al., Nature Communications, Suppl. Figure 2e"
+author: "Sibylle Mitschka"
+output: 
+  html_document: 
+    code_folding: show
+    df_print: paged
+---
+
+## Loading of R packages
+(not all may be required for this code section)
+
+```{r message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(broom)
+library(Biostrings)
+library(ggpubr)
+library(rtracklayer)
+library(org.Hs.eg.db)
+library(RColorBrewer)
+library(biomaRt)
+library(GenomicFeatures)
+library(BSgenome)
+library(GeneOverlap)
+library(pheatmap)
+library(biomaRt)
+library(plyranges)
+library(ggrepel)
+library(writexl)
+library(gridExtra)
+library(readxl)
+
+```
+
+First, we create a histgram showing the proportion of CS that are used in either more or less than 10% of cell types in which the gene is detected. The data for this analysis are stored in Suppl. Data 2
+
+```{r warning=FALSE}
+
+### MWS cleavage site atlas
+
+CS_mm <- read_xlsx("Table_outputs/Suppl_Data2.xlsx", sheet="MWS CS Annots (MCA)")
+
+plot_histogram_mouse <- ggplot(CS_mm, aes(x=cs_usage_score, fill=cs_usage_class))+
+  geom_histogram(binwidth = 0.02)+
+  scale_fill_manual(values=c("cadetblue","grey"))+
+  theme_bw()
+
+CS_mm %>% count(cs_usage_class)
+
+ggsave("Figure_outputs/Sup_Fig2d.pdf", plot_histogram_mouse)
+
+```
+
+Database comparison for mouse CS annoations. We load information for all three atlases and convert them to GRanges. 
+For the MWS atlas, we are subsetting the pool to "major" CS. For the other databases we are restricting this analysis to protein-coding genes for which we rely on the gene labels that have  been assigned by the individual databases.
+
+```{r}
+
+### Loading of mouse MWS cleavage site atlas data. Converting to GRanges.
+
+CS_mm <- read_csv("input_data/MWS_data/Mouse_MWS_CS_Annotation.csv")
+
+CS_gr_mm <- makeGRangesFromDataFrame(CS_mm,
+                         keep.extra.columns=TRUE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field="seq",
+                         start.field="end_3p",
+                         end.field="end_3p",
+                         strand.field="strand",
+                         starts.in.df.are.0based=FALSE)
+
+### Identify protein-coding genes and remove gene_ID version labels.
+
+gencode_mouse <- makeTxDbFromGFF("input_data/annotation/mca2/gff/gencode.vM25.mRNA_ends_found.gff3.gz")
+
+protein_coding_genes_mm <- names(cdsBy(gencode_mouse, "gene")) %>% sub('\\.[0-9]*$', '', .)
+
+MWS_major_census_mm <- CS_mm %>% 
+  dplyr::filter(cs_usage_class == "major") %>%
+  count(gene_id) %>%
+  count(n) %>%
+  mutate(isoforms= ifelse(n<10, n, ">9")) %>%
+  group_by(isoforms) %>%
+  summarize(genes= sum(nn)) %>%
+  mutate(DB= "MWS atlas, major isoforms")
+
+### Protein-coding genes in PolyASite2.0: 17903
+
+CS_mm %>% 
+  dplyr::filter(cs_usage_class == "major") %>%
+  count(gene_id) %>%
+  nrow()
+
+url <- "https://polyasite.unibas.ch/download/atlas/2.0/GRCm38.96/atlas.clusters.2.0.GRCm38.96.tsv.gz"
+polA_site_mm <- read_tsv(url, col_names=TRUE) %>% 
+  dplyr::select(c(1:13))
+
+
+colnames(polA_site_mm) <- c("chromosome", "start", "end", "cluster_id", "TPM", "strand", 
+                         "PAS_pos", "perc_samples_detected", "no_samples_detected","type", 
+                         "gene_name", "gene_id", "PAS")
+
+polA_site_gr_mm <- makeGRangesFromDataFrame(polA_site_mm,
+                                        keep.extra.columns=TRUE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field= "Chromosome",
+                         start.field="start",
+                         end.field= "end",
+                         strand.field= "strand",
+                         starts.in.df.are.0based=FALSE)
+
+seqlevelsStyle(polA_site_gr_mm) <- "UCSC"
+
+### Prepare summarized data table for PolyA Site2.0
+
+polyA_site_census_mm <- polA_site_mm %>% 
+  dplyr::filter(gene_id %in% protein_coding_genes_mm) %>%
+  count(gene_id) %>%
+  count(n) %>%
+  mutate(isoforms= ifelse(n<10, n, ">9")) %>%
+  group_by(isoforms) %>%
+  summarize(genes= sum(nn)) %>%
+  mutate(DB= "PolyASite 2.0")
+
+### Protein-coding genes in PolyASite2.0: 17736
+polA_site_mm %>% 
+  dplyr::filter(gene_id %in% protein_coding_genes_mm) %>%
+  count(gene_id) %>%
+  nrow()
+
+
+#### PolyA_DB_v3.2
+
+url <- "https://exon.apps.wistar.org/polya_db/v3/download/3.2/mouse_pas.zip"
+temp <- tempfile()
+download.file(url,temp)
+polA_db_mm <- read_tsv(temp)
+unlink(temp)
+
+polyA_db_gr_mm <- makeGRangesFromDataFrame(polA_db_mm,
+                         keep.extra.columns=TRUE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field= "Chromosome",
+                         start.field="Position",
+                         end.field= "Position",
+                         strand.field="Strand",
+                         starts.in.df.are.0based=FALSE)
+
+seqlevelsStyle(polyA_db_gr_mm) <- "UCSC"
+
+### perform liftover of granges from Mm9 to Mm10, respectively.
+
+path = "input_data/annotation/mm9ToMm10.over.chain"
+ch = import.chain(path)
+
+polyA_db_gr_10_mm <-  rtracklayer::liftOver(polyA_db_gr_mm, ch) %>% 
+  unlist()
+
+### Protein-coding genes in PolyASite2.0: 17736
+polA_db_mm %>% 
+  dplyr::filter(`Ensemble ID` %in% protein_coding_genes_mm) %>%
+  count(`Gene Symbol`) %>%
+  nrow()
+
+polA_db_census_mm <- polA_db_mm %>% 
+  dplyr::filter(`Ensemble ID` %in% protein_coding_genes_mm) %>%
+  count(`Gene Symbol`) %>%
+  count(n) %>%
+  mutate(isoforms= ifelse(n<10, n, ">9")) %>%
+  group_by(isoforms) %>%
+  summarize(genes= sum(nn)) %>%
+  mutate(DB= "PolyA_DB V3.2")
+
+### Summarize mouse data
+
+mm_census <- rbind(polA_db_census_mm, polyA_site_census_mm, MWS_major_census_mm) %>%
+  mutate(isoforms =factor(isoforms, levels=c(seq(1:9), ">9"))) %>%
+  dplyr::filter(!is.na(isoforms))
+
+### Create plot and save pdf file
+
+plot_mm <- ggplot(mm_census, aes(x=isoforms, y=genes/1000, fill=DB))+ 
+  geom_col(position="dodge", col="black")+ 
+  #ggtitle("Mouse") +
+  scale_y_continuous(limits = c(0,10), "Genes x 1,000 [mouse]", expand = c(0,0)) +
+  scale_x_discrete("Number of CS per gene") +
+  scale_fill_manual(values=c("#00a79d", "#756bb0", "#bcbddb"))+
+  theme_bw()
+
+plot_mm
+
+ggsave("Figure_outputs/Sup_Fig2e.pdf", plot_mm)
+
+```
+
+
+
+---
+
+# Runtime Details
+## Session Info
+<details>
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+</details>
+
+## Conda Environment
+<details>
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```
+</details>
+
+
