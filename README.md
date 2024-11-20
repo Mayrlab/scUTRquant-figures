@@ -3,7 +3,8 @@
 ## Overview
 
 This repository contains most of the scripts used to generate figures for
-[*Fansler et al., bioRxiv, 2023*](https://www.biorxiv.org/content/10.1101/2021.11.22.469635v2).
+
+> Fansler, M.M., Mitschka, S. & Mayr, C. Quantifying 3′UTR length from scRNA-seq data reveals changes independent of gene expression. *Nat Commun* **15**, 4050 (2024). [https://doi.org/10.1038/s41467-024-48254-9](https://doi.org/10.1038/s41467-024-48254-9)
 
 Additional figures were separately generated in the related repositories:
 
@@ -29,7 +30,7 @@ Files are named to correspond with the figures they generate. HTML renders
 of the RMarkdown files.
 
 ### Execution Environments
-The R instances used to execute the files was captured both in the rendered RMDs themselves
+The R instances used to execute the files were captured both in the rendered RMDs themselves
 (see **Runtime Details** section in HTMLs) and provided as YAML files in the `envs` folder.
 
 To recreate on arbitrary platforms (Linux or MacOS), we recommend using 
